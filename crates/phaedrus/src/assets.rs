@@ -52,6 +52,12 @@ fn find_roblox_install() -> Option<PathBuf> {
 }
 
 impl ContentProvider {
+    /// `%APPDATA%/phaedrus/assets`, where user-supplied and downloaded
+    /// assets live.
+    pub fn asset_cache_dir(&self) -> Option<&Path> {
+        self.asset_cache.as_deref()
+    }
+
     /// Resolves a content URL to a file path, if available locally.
     pub fn resolve(&self, url: &str) -> Option<PathBuf> {
         let url = url.trim();

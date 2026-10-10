@@ -167,6 +167,7 @@ fn ui_system(
     mut editor_settings: ResMut<ScriptEditorSettings>,
     mut camera_settings: ResMut<CameraSettings>,
     mut emulator_settings: ResMut<EmulatorSettings>,
+    mut api: ResMut<crate::opencloud::ApiAuth>,
     datastore: Res<DataStoreEmulatorHandle>,
     mut editor_host: NonSendMut<ScriptEditorHost>,
     viewport_texture: Res<ViewportTexture>,
@@ -370,7 +371,7 @@ fn ui_system(
     }
 
     dialogs::windows(&ctx, &mut studio, &mut state, &mut camera_settings);
-    settings_window::settings_window(&ctx, &mut state, &mut editor_settings, &mut graphics);
+    settings_window::settings_window(&ctx, &mut state, &mut editor_settings, &mut graphics, &mut api);
     emulator_window::emulator_window(&ctx, &mut state, &mut emulator_settings, &datastore);
     dialogs::loading_modal(&ctx, &mut studio);
     Ok(())

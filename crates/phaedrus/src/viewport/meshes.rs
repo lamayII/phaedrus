@@ -2,10 +2,15 @@
 //! and is sized with its transform's scale, which keeps memory flat no matter
 //! how many parts a place has.
 
+use std::collections::HashMap;
+use std::path::Path;
+
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
+use phaedrus_dom::Instance;
 use phaedrus_dom::geometry::PartShape;
+use phaedrus_dom::union::{UnionMesh, load_union_mesh};
 
 #[derive(Resource)]
 pub struct ShapeMeshes {
@@ -21,13 +26,73 @@ pub struct ShapeMeshes {
 impl ShapeMeshes {
     pub fn get(&self, shape: PartShape) -> Handle<Mesh> {
         match shape {
-            PartShape::Block | PartShape::Proxy => self.block.clone(),
+            PartShape::Block | PartShape::Proxy | PartShape::Union(_) => self.block.clone(),
             PartShape::Ball => self.ball.clone(),
             PartShape::Cylinder => self.cylinder.clone(),
             PartShape::Wedge => self.wedge.clone(),
             PartShape::CornerWedge => self.corner_wedge.clone(),
         }
     }
+}
+
+/// Decoded union meshes keyed by [`PartShape::Union`]. Misses (data not
+/// downloaded yet, or undecodable) are cached too so they are not retried
+/// every time the part changes; [`Self::forget_missing`] retries them.
+#[derive(Resource, Default)]
+pub struct UnionMeshes {
+    loaded: HashMap<u64, Option<Handle<Mesh>>>,
+}
+
+impl UnionMeshes {
+    pub fn get(
+        &mut self,
+        key: u64,
+        inst: &Instance,
+        cache_dir: Option<&Path>,
+        meshes: &mut Assets<Mesh>,
+    ) -> Option<Handle<Mesh>> {
+        self.loaded
+            .entry(key)
+            .or_insert_with(|| match load_union_mesh(inst, cache_dir) {
+                Ok(m) => m.filter(|m| !m.indices.is_empty()).map(|m| meshes.add(union_mesh(m))),
+                Err(e) => {
+                    warn!("could not decode union {:?}: {e:#}", inst.name);
+                    None
+                }
+            })
+            .clone()
+    }
+
+    /// Whether `key` was looked up and had no mesh.
+    pub fn is_missing(&self, key: u64) -> bool {
+        matches!(self.loaded.get(&key), Some(None))
+    }
+
+    /// Drops cached misses, e.g. after new assets were downloaded.
+    pub fn forget_missing(&mut self) {
+        self.loaded.retain(|_, h| h.is_some());
+    }
+
+    pub fn clear(&mut self) {
+        self.loaded.clear();
+    }
+}
+
+fn union_mesh(m: UnionMesh) -> Mesh {
+    let has_normals = m.normals.len() == m.positions.len();
+    let has_colors = m.colors.len() == m.positions.len();
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, m.positions)
+        .with_inserted_indices(Indices::U32(m.indices));
+    if has_normals {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, m.normals);
+    } else {
+        mesh.compute_normals();
+    }
+    if has_colors {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, m.colors);
+    }
+    mesh
 }
 
 pub fn create(meshes: &mut Assets<Mesh>) -> ShapeMeshes {

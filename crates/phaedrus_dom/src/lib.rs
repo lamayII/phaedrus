@@ -12,6 +12,7 @@ pub mod geometry;
 pub mod history;
 pub mod reflection;
 pub mod terrain;
+pub mod union;
 
 pub use document::{Change, Document};
 pub use format::{FileFormat, load_file, save_file};

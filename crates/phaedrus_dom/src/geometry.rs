@@ -15,8 +15,11 @@ pub enum PartShape {
     Cylinder,
     Wedge,
     CornerWedge,
-    /// Meshes, unions and other geometry we cannot rebuild locally render as
-    /// their bounding box.
+    /// A CSG union, keyed by [`crate::union::union_mesh_key`]. Renders as its
+    /// bounding box until the mesh is available.
+    Union(u64),
+    /// Meshes and other geometry we cannot rebuild locally render as their
+    /// bounding box.
     Proxy,
 }
 
@@ -74,6 +77,9 @@ pub fn part_geometry(inst: &Instance) -> Option<PartGeometry> {
         "CornerWedgePart" => PartShape::CornerWedge,
         "TrussPart" | "VehicleSeat" => PartShape::Block,
         "Terrain" => return None,
+        c if crate::union::is_union_class(c) => {
+            crate::union::union_mesh_key(inst).map_or(PartShape::Proxy, PartShape::Union)
+        }
         _ => PartShape::Proxy,
     };
     let cframe = match prop(inst, "CFrame") {
@@ -84,7 +90,12 @@ pub fn part_geometry(inst: &Instance) -> Option<PartGeometry> {
         Some(Variant::Vector3(v)) => *v,
         _ => Vector3::new(4.0, 1.0, 2.0),
     };
-    let color = part_color(inst).unwrap_or([0.64, 0.635, 0.647]);
+    // Unions that keep their parts' colours draw them from vertex colours.
+    let color = if matches!(shape, PartShape::Union(_)) && !crate::union::uses_part_color(inst) {
+        [1.0; 3]
+    } else {
+        part_color(inst).unwrap_or([0.64, 0.635, 0.647])
+    };
     let f32_prop = |name: &str, default: f32| match prop(inst, name) {
         Some(Variant::Float32(v)) => *v,
         Some(Variant::Float64(v)) => *v as f32,

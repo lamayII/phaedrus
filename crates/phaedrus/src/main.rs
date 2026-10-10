@@ -2,9 +2,11 @@
 //!
 //! Usage: `phaedrus [place.rbxl|place.rbxlx|model.rbxm]`
 
+mod asset_loader;
 mod assets;
 mod editor;
 mod emulators;
+mod opencloud;
 mod scripting;
 mod settings;
 mod studio;
@@ -69,12 +71,14 @@ fn main() {
         .add_plugins(EguiPlugin::default())
         .insert_resource(studio)
         .init_resource::<assets::ContentProvider>()
+        .init_resource::<opencloud::ApiAuth>()
+        .init_resource::<asset_loader::AssetDownloads>()
         .init_non_send::<scripting::Scripting>()
         .init_non_send::<editor::ScriptEditorHost>()
         .add_plugins((viewport::ViewportPlugin, ui::UiPlugin))
         .add_systems(Startup, setup_egui_camera)
-        .add_systems(PreUpdate, (poll_loading, scripting::collect_changes).chain())
-        .add_systems(Update, (emulators::sync_emulators, scripting::drive_scripts, editor::update_editor_host, apply_frame_cap, debug_screenshot, benchmark, settings::persist));
+        .add_systems(PreUpdate, (poll_loading, asset_loader::start_downloads, scripting::collect_changes).chain())
+        .add_systems(Update, (emulators::sync_emulators, scripting::drive_scripts, editor::update_editor_host, apply_frame_cap, debug_screenshot, benchmark, settings::persist, asset_loader::report_progress));
     if bench {
         // Per-pass CPU/GPU timings for `PHAEDRUS_BENCH_PASSES`.
         app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin);

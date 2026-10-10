@@ -81,6 +81,9 @@ pub struct Studio {
     pub status: String,
     /// A place file being read on a background thread.
     pub loading: Option<PendingLoad>,
+    /// Bumped each time a file finishes opening (not on run/stop), so the
+    /// asset loader knows when to fetch a place's assets.
+    pub opened: u64,
 }
 
 /// A file load running off the main thread so the UI stays responsive.
@@ -113,6 +116,7 @@ impl Studio {
             focus_request: false,
             status: String::new(),
             loading: None,
+            opened: 0,
         }
     }
 
@@ -206,6 +210,7 @@ impl Studio {
                     format!("Opened {} in {:.2}s", path.display(), load.started.elapsed().as_secs_f32()),
                 );
                 self.status = format!("Opened {title}");
+                self.opened += 1;
             }
             Err(e) => {
                 self.status = String::new();

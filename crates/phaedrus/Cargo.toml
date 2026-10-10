@@ -17,6 +17,8 @@ bevy_egui = "0.42"
 rfd = "0.17"
 serde_json = "1"
 wry = "0.57"
+keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native"] }
+ureq = { version = "3", features = ["json"] }
 
 [features]
 # Links bevy as a dylib for much faster incremental builds. Dev only: use

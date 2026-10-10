@@ -49,6 +49,8 @@ no web view can be created (or `PHAEDRUS_NO_WEBVIEW=1` is set).
 - `emulators.rs`: service emulators (Test > Emulators); keeps the DataStoreService
   emulator in step with its settings and the open place, and saves its data.
 - `assets.rs`: content URL resolution (see "Assets").
+- `opencloud.rs`: Open Cloud API key storage (OS credential store) and HTTP client.
+- `asset_loader.rs`: downloads a place's union meshes into the asset cache after it opens.
 
 ## Features
 
@@ -60,8 +62,9 @@ no web view can be created (or `PHAEDRUS_NO_WEBVIEW=1` is set).
   (Ctrl+Shift+P), editors for bools, numbers (with arithmetic, e.g. `2*4`), strings,
   Vector3/Vector2, Color3 (picker or `[r, g, b]`), BrickColor, enums, UDim/UDim2 and
   content IDs. Edits apply to every selected instance.
-- **Viewport**: parts (block, ball, cylinder, wedge, corner wedge; meshes/unions as
-  bounding boxes), Roblox materials mapped to PBR, transparency, Decals and Textures
+- **Viewport**: parts (block, ball, cylinder, wedge, corner wedge), unions (CSGMDL
+  v2/v4/v5 via `rbx_mesh`, from inline `MeshData2` or downloaded assets; bounding boxes
+  until available), MeshParts as bounding boxes, Roblox materials mapped to PBR, transparency, Decals and Textures
   (with stud tiling), PointLight/SpotLight/SurfaceLight.
 - **Terrain**: `Terrain.SmoothGrid` is decoded and meshed as smooth (Surface Nets)
   terrain, each material coloured from `Terrain.MaterialColors`; water uses `WaterColor`
@@ -166,7 +169,15 @@ the bevy/wgpu/driver baseline (DX12 is higher on NVIDIA).
 
 ## Assets
 
-Phaedrus never downloads Roblox assets. Content URLs resolve as follows:
+Phaedrus only downloads assets when you add a Roblox Open Cloud API key in File >
+Phaedrus Settings > API Manager. The page lists the scope to grant
+(`legacy-asset:manage`) and how to keep the key safe. The key is kept in the OS credential
+store (Windows Credential Manager), and is only sent to `apis.roblox.com`. With a key,
+opening a place downloads its union meshes into `%APPDATA%/phaedrus/assets/ID.meshdata`
+(only the ones not already cached). Without one, a warning is posted to Output and those
+unions render as bounding boxes.
+
+Content URLs resolve as follows:
 
 1. `rbxasset://...` maps into a locally installed Roblox Studio `content` folder if one
    exists (the sun and moon textures come from there; procedural ones are used otherwise).
@@ -207,7 +218,7 @@ Benchmark and screenshot runs never save settings.
 - Play (F5) with a character and client/server split is not implemented; F5 falls back
   to Run. LocalScripts do not run.
 - No physics: unanchored parts stay where they are.
-- Terrain editing, MeshPart/Union geometry, SurfaceGui/BillboardGui rendering and custom skybox
+- Terrain editing, MeshPart geometry, SurfaceGui/BillboardGui rendering and custom skybox
   textures (unless available locally) are not rendered.
 - The Luau API covers common instance, datatype, signal and task functionality, not the
   full Roblox API. Services such as TweenService and HttpService are not implemented;

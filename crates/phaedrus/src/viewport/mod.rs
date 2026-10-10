@@ -73,6 +73,7 @@ impl Plugin for ViewportPlugin {
             .init_resource::<culling::CullGrid>()
             .init_resource::<terrain::TerrainState>()
             .init_resource::<materials::MaterialCache>()
+            .init_resource::<meshes::UnionMeshes>()
             .init_resource::<tools::ToolState>()
             .init_resource::<camera::CameraSettings>()
             .init_resource::<lighting::GraphicsSettings>()
