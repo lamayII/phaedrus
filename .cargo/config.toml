@@ -1,0 +1,9 @@
+# Fast iteration: `cargo dev` / `cargo dev-build` link bevy dynamically.
+# Plain `cargo build --release` stays statically linked.
+[alias]
+dev = "run -p phaedrus --features dynamic_linking"
+dev-build = "build -p phaedrus --features dynamic_linking"
+
+# rust-lld is much faster than the default MSVC link.exe.
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"

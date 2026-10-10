@@ -1,0 +1,7 @@
+/target
+/assets/monaco
+
+# Local files
+
+PROMPT.md
+*.rbxl

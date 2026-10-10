@@ -1,0 +1,26 @@
+[package]
+name = "phaedrus_script_editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Phaedrus script editor: Monaco plus Luau/Roblox intellisense, compiled to WebAssembly"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Default features stay on: full_moon 3.0 does not build without `serde`.
+full_moon = { version = "3", features = ["luau"] }
+serde = { version = "1", features = ["derive"] }
+# preserve_order: Monarch grammars depend on object key order.
+serde_json = { version = "1", features = ["preserve_order"] }
+
+# The editor UI only exists in the browser build; the analysis above also
+# builds natively so it can be unit tested.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+monaco = { version = "0.7", default-features = false, features = ["api"] }
+# Must match `wasm-bindgen-cli-support` in crates/phaedrus/Cargo.toml.
+wasm-bindgen = "=0.2.129"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Window", "Document", "HtmlElement", "Element", "CssStyleDeclaration"] }
+serde-wasm-bindgen = "0.6"

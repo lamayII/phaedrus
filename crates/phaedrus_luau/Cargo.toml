@@ -1,0 +1,13 @@
+[package]
+name = "phaedrus_luau"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+phaedrus_dom.workspace = true
+mlua.workspace = true
+anyhow.workspace = true
+parking_lot = "0.12"
+glam.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="dark">
+<title>Phaedrus Script Editor</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #252525; }
+  #root { position: absolute; inset: 0; }
+  #status { position: absolute; right: 16px; bottom: 6px; color: #888; font: 11px sans-serif; z-index: 10; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<div id="status"></div>
+<script>
+  // Monaco's editor worker is served next to this page.
+  self.MonacoEnvironment = { getWorkerUrl: function () { return './editor.worker.js'; } };
+</script>
+<script type="module">
+  import init, * as editor from './phaedrus_script_editor.js';
+  await init({ module_or_path: './phaedrus_script_editor_bg.wasm' });
+  window.phaedrus = editor;
+  window.ipc.postMessage(JSON.stringify({ type: 'ready' }));
+</script>
+</body>
+</html>

@@ -1,0 +1,493 @@
+# Luau globals, libraries and Roblox datatypes for script intellisense.
+# Classes and enums come from roblox-api.json; this file covers the rest.
+#
+#   datatype Name      values of this type; `Name` is also a global table of statics
+#   library name       a global table of functions/constants
+#   .name(...): T      static function (or library function)
+#   .name: T           static constant
+#   :name(...): T      method on values
+#   name: T            property on values
+#   global ...         a global function or value
+#
+# Parameters are `name: Type`, `name: Type?` for optional ones and `...: Type`
+# for varargs. A missing return type means nil; `(A, B)` returns several values.
+# Anything after `--` is documentation.
+
+global print(...: any) -- Prints its arguments to the output.
+global warn(...: any) -- Prints its arguments to the output as a warning.
+global error(message: any, level: number?) -- Throws an error.
+global assert(value: any, message: string?): any -- Throws if value is false or nil.
+global pairs(t: table): (function, table, nil) -- Iterates over all keys of a table.
+global ipairs(t: table): (function, table, number) -- Iterates over the array part of a table.
+global next(t: table, key: any?): (any, any)
+global select(index: any, ...: any): any
+global tostring(value: any): string
+global tonumber(value: any, base: number?): number?
+global type(value: any): string
+global typeof(value: any): string -- Like type, but also knows Roblox types.
+global pcall(f: function, ...: any): (boolean, any)
+global xpcall(f: function, handler: function, ...: any): (boolean, any)
+global require(module: ModuleScript): any -- Runs a ModuleScript and returns its result.
+global setmetatable(t: table, metatable: table?): table
+global getmetatable(t: any): table?
+global rawget(t: table, key: any): any
+global rawset(t: table, key: any, value: any): table
+global rawequal(a: any, b: any): boolean
+global rawlen(t: table): number
+global unpack(t: table, i: number?, j: number?): ...any
+global newproxy(addMetatable: boolean?): any
+global tick(): number -- Seconds since the Unix epoch.
+global time(): number -- Seconds since the game started running.
+global elapsedTime(): number
+global gcinfo(): number
+global wait(seconds: number?): (number, number) -- Deprecated: use task.wait.
+global delay(seconds: number, callback: function) -- Deprecated: use task.delay.
+global spawn(callback: function) -- Deprecated: use task.spawn.
+global game: DataModel -- The root of the place.
+global workspace: Workspace -- The Workspace service.
+global Workspace: Workspace
+global shared: table
+global _G: table
+global _VERSION: string
+
+library math
+.abs(x: number): number
+.acos(x: number): number
+.asin(x: number): number
+.atan(x: number): number
+.atan2(y: number, x: number): number
+.ceil(x: number): number
+.clamp(x: number, min: number, max: number): number
+.cos(x: number): number
+.cosh(x: number): number
+.deg(x: number): number
+.exp(x: number): number
+.floor(x: number): number
+.fmod(x: number, y: number): number
+.frexp(x: number): (number, number)
+.ldexp(m: number, e: number): number
+.lerp(a: number, b: number, t: number): number
+.log(x: number, base: number?): number
+.log10(x: number): number
+.map(x: number, inMin: number, inMax: number, outMin: number, outMax: number): number
+.max(x: number, ...: number): number
+.min(x: number, ...: number): number
+.modf(x: number): (number, number)
+.noise(x: number, y: number?, z: number?): number
+.pow(x: number, y: number): number
+.rad(x: number): number
+.random(m: number?, n: number?): number
+.randomseed(seed: number)
+.round(x: number): number
+.sign(x: number): number
+.sin(x: number): number
+.sinh(x: number): number
+.sqrt(x: number): number
+.tan(x: number): number
+.tanh(x: number): number
+.huge: number
+.pi: number
+
+library string
+.byte(s: string, i: number?, j: number?): ...number
+.char(...: number): string
+.find(s: string, pattern: string, init: number?, plain: boolean?): (number?, number?)
+.format(format: string, ...: any): string
+.gmatch(s: string, pattern: string): function
+.gsub(s: string, pattern: string, repl: any, n: number?): (string, number)
+.len(s: string): number
+.lower(s: string): string
+.match(s: string, pattern: string, init: number?): ...string
+.pack(format: string, ...: any): string
+.packsize(format: string): number
+.rep(s: string, n: number, sep: string?): string
+.reverse(s: string): string
+.split(s: string, separator: string?): {string}
+.sub(s: string, i: number, j: number?): string
+.unpack(format: string, s: string, init: number?): ...any
+.upper(s: string): string
+
+library table
+.clear(t: table)
+.clone(t: table): table
+.concat(t: table, sep: string?, i: number?, j: number?): string
+.create(count: number, value: any?): table
+.find(t: table, value: any, init: number?): number?
+.freeze(t: table): table
+.insert(t: table, pos: any, value: any?)
+.isfrozen(t: table): boolean
+.maxn(t: table): number
+.move(a: table, f: number, e: number, t: number, b: table?): table
+.pack(...: any): table
+.remove(t: table, pos: number?): any
+.sort(t: table, comp: function?)
+.unpack(t: table, i: number?, j: number?): ...any
+
+library task
+.cancel(thread: thread) -- Cancels a thread.
+.defer(f: function, ...: any): thread -- Runs f at the end of the current resumption cycle.
+.delay(seconds: number, f: function, ...: any): thread -- Runs f after a delay.
+.desynchronize()
+.spawn(f: function, ...: any): thread -- Runs f immediately in a new thread.
+.synchronize()
+.wait(seconds: number?): number -- Yields for the given number of seconds.
+
+library coroutine
+.close(co: thread): (boolean, any)
+.create(f: function): thread
+.isyieldable(): boolean
+.resume(co: thread, ...: any): (boolean, any)
+.running(): thread
+.status(co: thread): string
+.wrap(f: function): function
+.yield(...: any): any
+
+library os
+.clock(): number
+.date(format: string?, time: number?): any
+.difftime(t2: number, t1: number?): number
+.time(t: table?): number
+
+library utf8
+.char(...: number): string
+.charpattern: string
+.codepoint(s: string, i: number?, j: number?): ...number
+.codes(s: string): function
+.graphemes(s: string, i: number?, j: number?): function
+.len(s: string, i: number?, j: number?): number?
+.nfcnormalize(s: string): string
+.nfdnormalize(s: string): string
+.offset(s: string, n: number, i: number?): number?
+
+library bit32
+.arshift(x: number, disp: number): number
+.band(...: number): number
+.bnot(x: number): number
+.bor(...: number): number
+.btest(...: number): boolean
+.bxor(...: number): number
+.byteswap(n: number): number
+.countlz(n: number): number
+.countrz(n: number): number
+.extract(n: number, field: number, width: number?): number
+.lrotate(x: number, disp: number): number
+.lshift(x: number, disp: number): number
+.replace(n: number, v: number, field: number, width: number?): number
+.rrotate(x: number, disp: number): number
+.rshift(x: number, disp: number): number
+
+library buffer
+.copy(target: buffer, targetOffset: number, source: buffer, sourceOffset: number?, count: number?)
+.create(size: number): buffer
+.fill(b: buffer, offset: number, value: number, count: number?)
+.fromstring(str: string): buffer
+.len(b: buffer): number
+.readf32(b: buffer, offset: number): number
+.readf64(b: buffer, offset: number): number
+.readi16(b: buffer, offset: number): number
+.readi32(b: buffer, offset: number): number
+.readi8(b: buffer, offset: number): number
+.readstring(b: buffer, offset: number, count: number): string
+.readu16(b: buffer, offset: number): number
+.readu32(b: buffer, offset: number): number
+.readu8(b: buffer, offset: number): number
+.tostring(b: buffer): string
+.writef32(b: buffer, offset: number, value: number)
+.writef64(b: buffer, offset: number, value: number)
+.writei16(b: buffer, offset: number, value: number)
+.writei32(b: buffer, offset: number, value: number)
+.writei8(b: buffer, offset: number, value: number)
+.writestring(b: buffer, offset: number, value: string, count: number?)
+.writeu16(b: buffer, offset: number, value: number)
+.writeu32(b: buffer, offset: number, value: number)
+.writeu8(b: buffer, offset: number, value: number)
+
+library debug
+.info(f: any, options: string): ...any
+.profilebegin(label: string)
+.profileend()
+.resetmemorycategory()
+.setmemorycategory(tag: string): string
+.traceback(message: string?, level: number?): string
+
+datatype Instance
+.new(className: string, parent: Instance?): Instance -- Creates a new instance of the given class.
+.fromExisting(existing: Instance): Instance
+
+datatype RBXScriptConnection
+Connected: boolean
+:Disconnect() -- Stops the connected function from being called.
+
+datatype Vector3
+.new(x: number?, y: number?, z: number?): Vector3
+.FromNormalId(normal: Enum.NormalId): Vector3
+.FromAxis(axis: Enum.Axis): Vector3
+.zero: Vector3
+.one: Vector3
+.xAxis: Vector3
+.yAxis: Vector3
+.zAxis: Vector3
+X: number
+Y: number
+Z: number
+Magnitude: number
+Unit: Vector3
+:Abs(): Vector3
+:Angle(other: Vector3, axis: Vector3?): number
+:Ceil(): Vector3
+:Cross(other: Vector3): Vector3
+:Dot(other: Vector3): number
+:Floor(): Vector3
+:FuzzyEq(other: Vector3, epsilon: number?): boolean
+:Lerp(goal: Vector3, alpha: number): Vector3
+:Max(...: Vector3): Vector3
+:Min(...: Vector3): Vector3
+:Sign(): Vector3
+
+datatype Vector2
+.new(x: number?, y: number?): Vector2
+.zero: Vector2
+.one: Vector2
+.xAxis: Vector2
+.yAxis: Vector2
+X: number
+Y: number
+Magnitude: number
+Unit: Vector2
+:Abs(): Vector2
+:Angle(other: Vector2, isSigned: boolean?): number
+:Ceil(): Vector2
+:Cross(other: Vector2): number
+:Dot(other: Vector2): number
+:Floor(): Vector2
+:FuzzyEq(other: Vector2, epsilon: number?): boolean
+:Lerp(goal: Vector2, alpha: number): Vector2
+:Max(...: Vector2): Vector2
+:Min(...: Vector2): Vector2
+:Sign(): Vector2
+
+datatype CFrame
+.new(x: any?, y: any?, z: number?, ...: number): CFrame -- CFrame.new(pos), CFrame.new(pos, lookAt), CFrame.new(x, y, z), ...
+.Angles(rx: number, ry: number, rz: number): CFrame
+.fromEulerAngles(rx: number, ry: number, rz: number, order: Enum.RotationOrder?): CFrame
+.fromEulerAnglesXYZ(rx: number, ry: number, rz: number): CFrame
+.fromEulerAnglesYXZ(rx: number, ry: number, rz: number): CFrame
+.fromOrientation(rx: number, ry: number, rz: number): CFrame
+.fromAxisAngle(axis: Vector3, angle: number): CFrame
+.fromMatrix(pos: Vector3, vX: Vector3, vY: Vector3, vZ: Vector3?): CFrame
+.lookAt(at: Vector3, lookAt: Vector3, up: Vector3?): CFrame
+.lookAlong(at: Vector3, direction: Vector3, up: Vector3?): CFrame
+.identity: CFrame
+Position: Vector3
+Rotation: CFrame
+X: number
+Y: number
+Z: number
+LookVector: Vector3
+RightVector: Vector3
+UpVector: Vector3
+XVector: Vector3
+YVector: Vector3
+ZVector: Vector3
+:Inverse(): CFrame
+:Lerp(goal: CFrame, alpha: number): CFrame
+:Orthonormalize(): CFrame
+:ToWorldSpace(...: CFrame): CFrame
+:ToObjectSpace(...: CFrame): CFrame
+:PointToWorldSpace(...: Vector3): Vector3
+:PointToObjectSpace(...: Vector3): Vector3
+:VectorToWorldSpace(...: Vector3): Vector3
+:VectorToObjectSpace(...: Vector3): Vector3
+:GetComponents(): ...number
+:ToEulerAngles(order: Enum.RotationOrder?): (number, number, number)
+:ToEulerAnglesXYZ(): (number, number, number)
+:ToEulerAnglesYXZ(): (number, number, number)
+:ToOrientation(): (number, number, number)
+:ToAxisAngle(): (Vector3, number)
+:FuzzyEq(other: CFrame, epsilon: number?): boolean
+:AngleBetween(other: CFrame): number
+
+datatype Color3
+.new(r: number?, g: number?, b: number?): Color3 -- Components from 0 to 1.
+.fromRGB(r: number?, g: number?, b: number?): Color3 -- Components from 0 to 255.
+.fromHSV(h: number, s: number, v: number): Color3
+.fromHex(hex: string): Color3
+.toHSV(color: Color3): (number, number, number)
+R: number
+G: number
+B: number
+:Lerp(goal: Color3, alpha: number): Color3
+:ToHSV(): (number, number, number)
+:ToHex(): string
+
+datatype BrickColor
+.new(value: any): BrickColor
+.palette(index: number): BrickColor
+.random(): BrickColor
+.White(): BrickColor
+.Gray(): BrickColor
+.DarkGray(): BrickColor
+.Black(): BrickColor
+.Red(): BrickColor
+.Yellow(): BrickColor
+.Green(): BrickColor
+.Blue(): BrickColor
+Name: string
+Number: number
+Color: Color3
+r: number
+g: number
+b: number
+
+datatype UDim
+.new(scale: number?, offset: number?): UDim
+Scale: number
+Offset: number
+
+datatype UDim2
+.new(xScale: any?, xOffset: any?, yScale: number?, yOffset: number?): UDim2
+.fromScale(xScale: number, yScale: number): UDim2
+.fromOffset(xOffset: number, yOffset: number): UDim2
+X: UDim
+Y: UDim
+Width: UDim
+Height: UDim
+:Lerp(goal: UDim2, alpha: number): UDim2
+
+datatype Rect
+.new(minX: any?, minY: any?, maxX: number?, maxY: number?): Rect
+Min: Vector2
+Max: Vector2
+Width: number
+Height: number
+
+datatype Ray
+.new(origin: Vector3, direction: Vector3): Ray
+Origin: Vector3
+Direction: Vector3
+Unit: Ray
+:ClosestPoint(point: Vector3): Vector3
+:Distance(point: Vector3): number
+
+datatype Region3
+.new(min: Vector3, max: Vector3): Region3
+CFrame: CFrame
+Size: Vector3
+:ExpandToGrid(resolution: number): Region3
+
+datatype NumberRange
+.new(min: number, max: number?): NumberRange
+Min: number
+Max: number
+
+datatype NumberSequenceKeypoint
+.new(time: number, value: number, envelope: number?): NumberSequenceKeypoint
+Time: number
+Value: number
+Envelope: number
+
+datatype NumberSequence
+.new(n0: any, n1: number?): NumberSequence
+Keypoints: {NumberSequenceKeypoint}
+
+datatype ColorSequenceKeypoint
+.new(time: number, color: Color3): ColorSequenceKeypoint
+Time: number
+Value: Color3
+
+datatype ColorSequence
+.new(c0: any, c1: Color3?): ColorSequence
+Keypoints: {ColorSequenceKeypoint}
+
+datatype TweenInfo
+.new(time: number?, easingStyle: Enum.EasingStyle?, easingDirection: Enum.EasingDirection?, repeatCount: number?, reverses: boolean?, delayTime: number?): TweenInfo
+Time: number
+EasingStyle: Enum.EasingStyle
+EasingDirection: Enum.EasingDirection
+RepeatCount: number
+Reverses: boolean
+DelayTime: number
+
+datatype PhysicalProperties
+.new(density: any, friction: number?, elasticity: number?, frictionWeight: number?, elasticityWeight: number?): PhysicalProperties
+Density: number
+Friction: number
+Elasticity: number
+FrictionWeight: number
+ElasticityWeight: number
+
+datatype Random
+.new(seed: number?): Random
+:NextInteger(min: number, max: number): number
+:NextNumber(min: number?, max: number?): number
+:NextUnitVector(): Vector3
+:Shuffle(t: table)
+:Clone(): Random
+
+datatype DateTime
+.now(): DateTime
+.fromUnixTimestamp(seconds: number): DateTime
+.fromUnixTimestampMillis(millis: number): DateTime
+.fromUniversalTime(year: number?, month: number?, day: number?, hour: number?, minute: number?, second: number?, millisecond: number?): DateTime
+.fromLocalTime(year: number?, month: number?, day: number?, hour: number?, minute: number?, second: number?, millisecond: number?): DateTime
+.fromIsoDate(isoDate: string): DateTime?
+UnixTimestamp: number
+UnixTimestampMillis: number
+:ToUniversalTime(): table
+:ToLocalTime(): table
+:ToIsoDate(): string
+:FormatUniversalTime(format: string, locale: string): string
+:FormatLocalTime(format: string, locale: string): string
+
+datatype RaycastParams
+.new(): RaycastParams
+FilterDescendantsInstances: {Instance}
+FilterType: Enum.RaycastFilterType
+IgnoreWater: boolean
+CollisionGroup: string
+RespectCanCollide: boolean
+BruteForceAllSlow: boolean
+:AddToFilter(instances: any)
+
+datatype OverlapParams
+.new(): OverlapParams
+FilterDescendantsInstances: {Instance}
+FilterType: Enum.RaycastFilterType
+MaxParts: number
+CollisionGroup: string
+RespectCanCollide: boolean
+BruteForceAllSlow: boolean
+:AddToFilter(instances: any)
+
+datatype RaycastResult
+Instance: BasePart
+Position: Vector3
+Normal: Vector3
+Distance: number
+Material: Enum.Material
+
+datatype Font
+.new(family: string, weight: Enum.FontWeight?, style: Enum.FontStyle?): Font
+.fromEnum(font: Enum.Font): Font
+.fromName(name: string, weight: Enum.FontWeight?, style: Enum.FontStyle?): Font
+.fromId(id: number, weight: Enum.FontWeight?, style: Enum.FontStyle?): Font
+Family: string
+Weight: Enum.FontWeight
+Style: Enum.FontStyle
+Bold: boolean
+
+datatype CatalogSearchParams
+.new(): CatalogSearchParams
+SearchKeyword: string
+MinPrice: number
+MaxPrice: number
+
+datatype SharedTable
+.new(t: table?): SharedTable
+.clear(st: SharedTable)
+.clone(st: SharedTable, deep: boolean?): SharedTable
+.cloneAndFreeze(st: SharedTable, deep: boolean?): SharedTable
+.increment(st: SharedTable, key: any, delta: number): number
+.isFrozen(st: SharedTable): boolean
+.size(st: SharedTable): number
+.update(st: SharedTable, key: any, f: function)

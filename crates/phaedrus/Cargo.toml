@@ -1,0 +1,29 @@
+[package]
+name = "phaedrus"
+version.workspace = true
+edition.workspace = true
+description = "A clean-room Roblox Studio alternative written in Rust"
+
+[dependencies]
+phaedrus_dom.workspace = true
+phaedrus_luau.workspace = true
+phaedrus_script_editor = { path = "../phaedrus_script_editor" }
+serde = { version = "1", features = ["derive"] }
+anyhow.workspace = true
+log.workspace = true
+parking_lot = "0.12"
+bevy = { version = "0.19", default-features = false, features = ["3d", "ui", "jpeg", "dds", "png"] }
+bevy_egui = "0.42"
+rfd = "0.17"
+serde_json = "1"
+wry = "0.57"
+
+[features]
+# Links bevy as a dylib for much faster incremental builds. Dev only: use
+# `cargo dev` (see .cargo/config.toml); never enable for --release builds.
+dynamic_linking = ["bevy/dynamic_linking"]
+
+[build-dependencies]
+# Must match the `wasm-bindgen` version in crates/phaedrus_script_editor.
+wasm-bindgen-cli-support = "=0.2.129"
+serde_json = "1"

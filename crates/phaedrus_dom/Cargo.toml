@@ -1,0 +1,13 @@
+[package]
+name = "phaedrus_dom"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rbx_dom_weak.workspace = true
+rbx_binary.workspace = true
+rbx_xml.workspace = true
+rbx_reflection_database.workspace = true
+rbx_types.workspace = true
+rbx_reflection = "7"
+anyhow.workspace = true
