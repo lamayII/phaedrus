@@ -6,27 +6,31 @@
 //! boxes and only locally available textures show.
 //! Downloaded files stay in the cache, so reopening a place only fetches
 //! what is still missing.
+//!
+//! Everything slow happens on the download threads: the request, the cache
+//! write, and decoding the mesh or image. The main thread only receives
+//! decoded [`Arrival`]s (see [`AssetDownloads::take_arrivals`]) and uploads
+//! them, so downloads do not stall the viewport.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use bevy::prelude::*;
 use parking_lot::Mutex;
 use phaedrus_dom::content::{AssetKind, ImageAsset, cache_file, classify_image, missing_assets};
+use phaedrus_dom::mesh::{DecodedMesh, decode_mesh};
+use phaedrus_dom::union::decode_union_asset;
 use phaedrus_luau::{OutputLevel, OutputLine, SharedOutput};
 
-use crate::assets::ContentProvider;
+use crate::assets::{ContentProvider, decode_image};
 use crate::opencloud::{ApiAuth, ApiError, ApiKey, OpenCloud};
 use crate::studio::Studio;
 
 const WORKERS: usize = 6;
 const MAX_RETRIES: u32 = 5;
-/// The viewport re-checks missing assets at most this often while
-/// downloads are running.
-const REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 
 pub const NO_AUTH_WARNING: &str = "Assets cannot load without user auth: add an Open Cloud API key in \
     File > Phaedrus Settings > API Manager.";
@@ -52,13 +56,27 @@ struct Progress {
     workers_left: usize,
 }
 
+/// An asset that finished downloading, already decoded off the main thread.
+pub struct Arrival {
+    pub id: u64,
+    pub kind: AssetKind,
+    /// `None` if it could not be decoded; the renderer then falls back to
+    /// reading the cache file itself, which reports the error.
+    pub decoded: Option<Decoded>,
+}
+
+pub enum Decoded {
+    /// A union mesh (in studs at its `InitialSize`) or a `.mesh` in its own
+    /// units; either still needs fitting to its part.
+    Mesh(DecodedMesh),
+    Image(Image),
+}
+
 struct Job {
     queue: Mutex<VecDeque<(u64, AssetKind)>>,
     progress: Mutex<Progress>,
     cancel: AtomicBool,
-    /// Bumped when new files land in the cache (throttled).
-    version: Arc<AtomicU64>,
-    last_bump: Mutex<Instant>,
+    arrivals: Arc<Mutex<Vec<Arrival>>>,
     cache_dir: PathBuf,
     output: SharedOutput,
 }
@@ -66,14 +84,14 @@ struct Job {
 #[derive(Resource, Default)]
 pub struct AssetDownloads {
     job: Option<Arc<Job>>,
-    version: Arc<AtomicU64>,
+    arrivals: Arc<Mutex<Vec<Arrival>>>,
     opened_seen: u64,
 }
 
 impl AssetDownloads {
-    /// Changes whenever downloaded meshes may have become available.
-    pub fn version(&self) -> u64 {
-        self.version.load(Ordering::Relaxed)
+    /// Assets that finished downloading since the last call.
+    pub fn take_arrivals(&self) -> Vec<Arrival> {
+        std::mem::take(&mut *self.arrivals.lock())
     }
 
     /// `(finished, total)` while a download is running.
@@ -121,8 +139,7 @@ impl AssetDownloads {
             progress: Mutex::new(Progress { total: ids.len(), workers_left: workers, ..default() }),
             queue: Mutex::new(ids.into()),
             cancel: AtomicBool::new(false),
-            version: self.version.clone(),
-            last_bump: Mutex::new(Instant::now()),
+            arrivals: self.arrivals.clone(),
             cache_dir: cache_dir.to_owned(),
             output: output.clone(),
         });
@@ -177,7 +194,13 @@ fn worker(job: &Job, client: &dyn Fetch) {
         match result {
             Ok(None) => p.unsupported += 1,
             Ok(Some((path, bytes))) => match write_atomic(&path, &bytes) {
-                Ok(()) => p.done += 1,
+                Ok(()) => {
+                    p.done += 1;
+                    drop(p);
+                    let decoded = decode(kind, &path, bytes);
+                    job.arrivals.lock().push(Arrival { id, kind, decoded });
+                    continue;
+                }
                 Err(e) => {
                     p.failed += 1;
                     log(&job.output, OutputLevel::Warn, format!("Could not cache asset {id}: {e}"));
@@ -198,26 +221,29 @@ fn worker(job: &Job, client: &dyn Fetch) {
                 }
             }
         }
-        drop(p);
-        let mut last = job.last_bump.lock();
-        if last.elapsed() >= REFRESH_INTERVAL {
-            *last = Instant::now();
-            job.version.fetch_add(1, Ordering::Relaxed);
-        }
     }
     let mut p = job.progress.lock();
     p.workers_left -= 1;
-    if p.workers_left == 0 {
-        job.version.fetch_add(1, Ordering::Relaxed);
-        if !job.cancel.load(Ordering::Relaxed) || p.done > 0 {
-            log(
-                &job.output,
-                if p.failed > 0 { OutputLevel::Warn } else { OutputLevel::Info },
-                format!(
-                    "Asset download finished: {} downloaded, {} not accessible with this key, {} in unsupported formats, {} failed.",
-                    p.done, p.skipped, p.unsupported, p.failed
-                ),
-            );
+    if p.workers_left == 0 && (!job.cancel.load(Ordering::Relaxed) || p.done > 0) {
+        log(
+            &job.output,
+            if p.failed > 0 { OutputLevel::Warn } else { OutputLevel::Info },
+            format!(
+                "Asset download finished: {} downloaded, {} not accessible with this key, {} in unsupported formats, {} failed.",
+                p.done, p.skipped, p.unsupported, p.failed
+            ),
+        );
+    }
+}
+
+/// Decodes a freshly cached asset so the main thread only has to upload it.
+fn decode(kind: AssetKind, path: &Path, bytes: Vec<u8>) -> Option<Decoded> {
+    match kind {
+        AssetKind::UnionMesh => decode_union_asset(bytes).ok().flatten().map(Decoded::Mesh),
+        AssetKind::Mesh => decode_mesh(&bytes).ok().map(Decoded::Mesh),
+        AssetKind::Image => {
+            let ext = path.extension()?.to_str()?;
+            decode_image(&bytes, ext).map(Decoded::Image)
         }
     }
 }
@@ -323,7 +349,7 @@ mod tests {
     }
 
     fn wait(d: &AssetDownloads) {
-        let start = Instant::now();
+        let start = std::time::Instant::now();
         while d.job.as_ref().is_some_and(|j| j.progress.lock().workers_left > 0) {
             assert!(start.elapsed() < Duration::from_secs(10), "downloads did not finish");
             std::thread::yield_now();
@@ -360,7 +386,6 @@ mod tests {
         let out = SharedOutput::default();
         let mut d = AssetDownloads::default();
         let key = ApiKey::new("test-key").unwrap();
-        let v0 = d.version();
         let started = d.begin(vec![(10, AssetKind::UnionMesh), (11, AssetKind::UnionMesh), (12, AssetKind::UnionMesh)], Some(&key), Some(&dir), &out, |_| {
             Arc::new(Fake(|id| if id == 11 { Err(ApiError::Forbidden) } else { Ok(vec![id as u8]) }))
         });
@@ -368,7 +393,10 @@ mod tests {
         wait(&d);
         assert_eq!(std::fs::read(cache_file(&dir, 10, AssetKind::UnionMesh)).unwrap(), [10]);
         assert!(!cache_file(&dir, 11, AssetKind::UnionMesh).exists());
-        assert!(d.version() > v0);
+        let mut arrived: Vec<u64> = d.take_arrivals().iter().map(|a| a.id).collect();
+        arrived.sort_unstable();
+        assert_eq!(arrived, [10, 12], "only downloaded assets arrive");
+        assert!(d.take_arrivals().is_empty(), "arrivals are handed over once");
         assert!(lines(&out).iter().any(|(_, t)| t.contains("2 downloaded, 1 not accessible")));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -410,15 +438,38 @@ mod tests {
                 20 => Ok(decal_model()),
                 21 => Ok(PNG.to_vec()),
                 22 => Ok(b"RIFF....WEBP".to_vec()),
-                _ => Ok(b"version 4.00".to_vec()),
+                _ => Ok(quad_mesh()),
             }))
         });
         wait(&d);
         // The Decal's image is cached under the Decal's own id.
         assert_eq!(std::fs::read(dir.join("20.png")).unwrap(), PNG);
         assert!(phaedrus_dom::content::cached_image(&dir, 22).is_none());
-        assert_eq!(std::fs::read(cache_file(&dir, 23, AssetKind::Mesh)).unwrap(), b"version 4.00");
+        assert_eq!(std::fs::read(cache_file(&dir, 23, AssetKind::Mesh)).unwrap(), quad_mesh());
+        // Meshes arrive already decoded, so the main thread does no parsing.
+        let arrivals = d.take_arrivals();
+        let mesh = arrivals.iter().find(|a| a.id == 23).expect("mesh arrived");
+        assert!(matches!(&mesh.decoded, Some(Decoded::Mesh(m)) if m.indices.len() == 6));
         assert!(lines(&out).iter().any(|(_, t)| t.contains("2 downloaded, 0 not accessible with this key, 1 in unsupported formats")));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A version 2.00 mesh holding one quad.
+    fn quad_mesh() -> Vec<u8> {
+        let mut b = b"version 2.00\n".to_vec();
+        b.extend_from_slice(&12u16.to_le_bytes());
+        b.extend_from_slice(&[36, 12]);
+        b.extend_from_slice(&4u32.to_le_bytes());
+        b.extend_from_slice(&2u32.to_le_bytes());
+        for (x, y) in [(0.0f32, 0.0f32), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
+            for f in [x, y, 0.0, 0.0, 0.0, 1.0, x, y] {
+                b.extend_from_slice(&f.to_le_bytes());
+            }
+            b.extend_from_slice(&[0; 4]);
+        }
+        for i in [0u32, 1, 2, 0, 2, 3] {
+            b.extend_from_slice(&i.to_le_bytes());
+        }
+        b
     }
 }

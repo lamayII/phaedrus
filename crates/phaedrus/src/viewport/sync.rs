@@ -1,6 +1,7 @@
 //! Mirrors BaseParts under Workspace into ECS entities.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::time::{Duration, Instant};
 
 use bevy::camera::visibility::NoCpuCulling;
 use bevy::light::NotShadowCaster;
@@ -13,7 +14,8 @@ use super::culling::CullGrid;
 use super::lighting::{GraphicsSettings, Technology, profile};
 use super::materials::{MaterialCache, MaterialKey};
 use super::meshes::{PartMeshes, ShapeMeshes};
-use crate::asset_loader::AssetDownloads;
+use crate::asset_loader::{Arrival, AssetDownloads, Decoded};
+use phaedrus_dom::content::{AssetKind, instance_assets};
 use crate::assets::ContentProvider;
 use crate::studio::Studio;
 
@@ -38,12 +40,18 @@ pub struct PartIndex {
     structure: u64,
     /// `QualityProfile::min_caster_size` the shadow flags were set with.
     min_caster_size: f32,
-    /// [`AssetDownloads::version`] last seen, to pick up downloaded assets.
-    downloads_seen: u64,
     /// Parts drawn without an asset (mesh or texture) that was not
-    /// available; redrawn when downloads land.
-    pending: HashSet<Ref>,
+    /// available, by the assets they use; redrawn when one of them arrives.
+    /// Entries can be stale (the part was removed or redrawn since).
+    waiting: HashMap<(u64, AssetKind), Vec<Ref>>,
+    /// Downloaded assets not yet applied (see [`ARRIVAL_BUDGET`]).
+    arrivals: VecDeque<Arrival>,
 }
+
+/// Main-thread time per frame spent applying downloaded assets. Decoding
+/// already happened on the download threads; this covers GPU uploads and
+/// redrawing the parts that use them.
+const ARRIVAL_BUDGET: Duration = Duration::from_millis(3);
 
 impl PartIndex {
     pub fn structure_version(&self) -> u64 {
@@ -167,7 +175,8 @@ pub fn sync_parts(
         }
         index.applied.clear();
         index.overlays.clear();
-        index.pending.clear();
+        index.waiting.clear();
+        index.arrivals.clear();
         ctx.mat_cache.clear();
         ctx.part_meshes.clear();
         ctx.grid.clear();
@@ -183,10 +192,8 @@ pub fn sync_parts(
         return;
     }
 
-    if index.downloads_seen != downloads.version() {
-        index.downloads_seen = downloads.version();
-        refresh_pending(&doc, &mut index, &mut ctx);
-    }
+    index.arrivals.extend(downloads.take_arrivals());
+    apply_arrivals(&doc, &mut index, &mut ctx);
 
     if studio.frame_changes.is_empty() {
         return;
@@ -286,25 +293,54 @@ fn material_for(doc: &Document, ctx: &mut SyncCtx, r: Ref, g: &PartGeometry, ins
 /// uses was downloaded or one of its SurfaceAppearances changed.
 fn refresh_part(doc: &Document, index: &mut PartIndex, ctx: &mut SyncCtx, r: Ref) {
     let (Some(&e), Some(g), Some(inst)) = (index.map.get(&r), index.applied.get(&r).copied(), doc.get(r)) else { return };
-    index.pending.remove(&r);
+    if let PartShape::Union(k) | PartShape::Mesh(k) = g.shape {
+        ctx.part_meshes.forget_missing(k);
+    }
     let (mesh, mesh_missing) = mesh_for(ctx, &g, inst);
     let (material, texture_missing) = material_for(doc, ctx, r, &g, inst);
     ctx.commands.entity(e).insert((Mesh3d(mesh), MeshMaterial3d(material)));
     if mesh_missing || texture_missing {
-        index.pending.insert(r);
+        wait_on_assets(doc, index, r);
     }
     rebuild_overlays(doc, index, ctx, r, e);
 }
 
-/// Retries parts that were drawn without an asset, after downloads landed.
-fn refresh_pending(doc: &Document, index: &mut PartIndex, ctx: &mut SyncCtx) {
-    if index.pending.is_empty() {
-        return;
+/// Records that `r` is drawn without some asset, under every asset it and
+/// its Decals, Textures and SurfaceAppearances use.
+fn wait_on_assets(doc: &Document, index: &mut PartIndex, r: Ref) {
+    let Some(inst) = doc.get(r) else { return };
+    let children = doc
+        .children(r)
+        .iter()
+        .filter_map(|c| doc.get(*c))
+        .filter(|c| is_overlay_class(&c.class) || c.class == "SurfaceAppearance");
+    for asset in std::iter::once(inst).chain(children).flat_map(instance_assets) {
+        let refs = index.waiting.entry(asset).or_default();
+        if refs.last() != Some(&r) {
+            refs.push(r);
+        }
     }
-    ctx.part_meshes.forget_missing();
-    ctx.content.forget_missing();
-    for r in std::mem::take(&mut index.pending) {
-        refresh_part(doc, index, ctx, r);
+}
+
+/// Uploads downloaded assets and redraws only the parts waiting on them,
+/// within [`ARRIVAL_BUDGET`] per frame.
+fn apply_arrivals(doc: &Document, index: &mut PartIndex, ctx: &mut SyncCtx) {
+    let start = Instant::now();
+    while start.elapsed() < ARRIVAL_BUDGET {
+        let Some(arrival) = index.arrivals.pop_front() else { break };
+        let Arrival { id, kind, decoded } = arrival;
+        match decoded {
+            Some(Decoded::Mesh(m)) => ctx.part_meshes.add_downloaded(id, kind, m),
+            Some(Decoded::Image(img)) => ctx.content.add_downloaded(id, img, ctx.images),
+            None => {}
+        }
+        let mut seen = HashSet::new();
+        for r in index.waiting.remove(&(id, kind)).unwrap_or_default() {
+            if seen.insert(r) {
+                refresh_part(doc, index, ctx, r);
+            }
+        }
+        ctx.part_meshes.take_downloaded(id, kind);
     }
 }
 
@@ -368,9 +404,7 @@ fn upsert(
             let (mesh, mesh_missing) = mesh_for(ctx, &g, inst);
             let (material, texture_missing) = material_for(doc, ctx, r, &g, inst);
             if mesh_missing || texture_missing {
-                index.pending.insert(r);
-            } else {
-                index.pending.remove(&r);
+                wait_on_assets(doc, index, r);
             }
             let mut ec = ctx.commands.entity(e);
             ec.insert((
@@ -394,9 +428,6 @@ fn upsert(
     }
     let (mesh, mesh_missing) = mesh_for(ctx, &g, inst);
     let (material, texture_missing) = material_for(doc, ctx, r, &g, inst);
-    if mesh_missing || texture_missing {
-        index.pending.insert(r);
-    }
     let mut ec = ctx.commands.spawn((
         PartRef(r),
         // Frustum culling happens on the GPU during mesh preprocessing.
@@ -415,6 +446,9 @@ fn upsert(
     }
     let e = ec.id();
     index.map.insert(r, e);
+    if mesh_missing || texture_missing {
+        wait_on_assets(doc, index, r);
+    }
     index.structure += 1;
     ctx.grid.mark_dirty(e);
     index.applied.insert(r, g);
@@ -433,7 +467,6 @@ fn remove(index: &mut PartIndex, ctx: &mut SyncCtx, r: Ref) {
     }
     index.applied.remove(&r);
     index.overlays.remove(&r);
-    index.pending.remove(&r);
 }
 
 /// NormalId -> (local translation axis, rotation of a +Z quad onto that face).
@@ -490,7 +523,7 @@ fn rebuild_overlays(doc: &Document, index: &mut PartIndex, ctx: &mut SyncCtx, pa
         let is_texture = inst.class == "Texture";
         let found = ctx.content.image(&url, ctx.images);
         if found.is_none() && !url.trim().is_empty() {
-            index.pending.insert(part);
+            wait_on_assets(doc, index, part);
         }
         let image = found.or_else(|| {
             // Unknown textures render as the stock grid, which is what most

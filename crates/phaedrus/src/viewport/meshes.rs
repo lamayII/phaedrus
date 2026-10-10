@@ -10,8 +10,9 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use phaedrus_dom::Instance;
 use phaedrus_dom::geometry::PartShape;
-use phaedrus_dom::mesh::{DecodedMesh, load_mesh_part};
-use phaedrus_dom::union::load_union_mesh;
+use phaedrus_dom::content::AssetKind;
+use phaedrus_dom::mesh::{DecodedMesh, finish_mesh_part, load_mesh_part, mesh_asset_id};
+use phaedrus_dom::union::{UnionSource, finish_union_mesh, load_union_mesh, union_source};
 
 #[derive(Resource)]
 pub struct ShapeMeshes {
@@ -45,6 +46,9 @@ type MeshLoader = fn(&Instance, Option<&Path>) -> anyhow::Result<Option<DecodedM
 #[derive(Resource, Default)]
 pub struct PartMeshes {
     loaded: HashMap<u64, Option<Handle<Mesh>>>,
+    /// Meshes the asset loader just downloaded and decoded, by asset; used
+    /// instead of reading the cache file while their parts are redrawn.
+    downloaded: HashMap<(u64, AssetKind), DecodedMesh>,
 }
 
 impl PartMeshes {
@@ -62,9 +66,10 @@ impl PartMeshes {
             PartShape::Mesh(k) => (k, load_mesh_part),
             _ => return None,
         };
+        let downloaded = &self.downloaded;
         self.loaded
             .entry(key)
-            .or_insert_with(|| match load(inst, cache_dir) {
+            .or_insert_with(|| match from_download(downloaded, shape, inst).map_or_else(|| load(inst, cache_dir), Ok) {
                 Ok(m) => m.filter(|m| !m.indices.is_empty()).map(|m| meshes.add(part_mesh(m))),
                 Err(e) => {
                     warn!("could not decode the mesh of {:?}: {e:#}", inst.name);
@@ -79,13 +84,47 @@ impl PartMeshes {
         matches!(self.loaded.get(&key), Some(None))
     }
 
-    /// Drops cached misses, e.g. after new assets were downloaded.
-    pub fn forget_missing(&mut self) {
-        self.loaded.retain(|_, h| h.is_some());
+    /// Drops a cached miss so the next lookup tries again.
+    pub fn forget_missing(&mut self, key: u64) {
+        if self.is_missing(key) {
+            self.loaded.remove(&key);
+        }
+    }
+
+    /// Holds a decoded download until [`Self::take_downloaded`].
+    pub fn add_downloaded(&mut self, id: u64, kind: AssetKind, mesh: DecodedMesh) {
+        self.downloaded.insert((id, kind), mesh);
+    }
+
+    /// Drops a decoded download once its parts have been redrawn; later
+    /// lookups read the cache file.
+    pub fn take_downloaded(&mut self, id: u64, kind: AssetKind) {
+        self.downloaded.remove(&(id, kind));
     }
 
     pub fn clear(&mut self) {
         self.loaded.clear();
+        self.downloaded.clear();
+    }
+}
+
+/// Fits a downloaded mesh to `inst`, if its asset was just downloaded.
+fn from_download(
+    downloaded: &HashMap<(u64, AssetKind), DecodedMesh>,
+    shape: PartShape,
+    inst: &Instance,
+) -> Option<Option<DecodedMesh>> {
+    match shape {
+        PartShape::Union(_) => {
+            let Some(UnionSource::Asset(id)) = union_source(inst) else { return None };
+            let mesh = downloaded.get(&(id, AssetKind::UnionMesh))?;
+            Some(Some(finish_union_mesh(inst, mesh.clone())))
+        }
+        PartShape::Mesh(_) => {
+            let mesh = downloaded.get(&(mesh_asset_id(inst)?, AssetKind::Mesh))?;
+            Some(finish_mesh_part(mesh.clone()))
+        }
+        _ => None,
     }
 }
 

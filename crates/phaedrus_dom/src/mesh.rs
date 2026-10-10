@@ -56,12 +56,17 @@ pub fn load_mesh_part(inst: &Instance, cache_dir: Option<&Path>) -> anyhow::Resu
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e.into()),
     };
-    let mut mesh = decode_mesh(&bytes)?;
+    Ok(finish_mesh_part(decode_mesh(&bytes)?))
+}
+
+/// Normalises a decoded `.mesh` for rendering; `None` if it has no
+/// triangles. Every MeshPart using the mesh shares the result.
+pub fn finish_mesh_part(mut mesh: DecodedMesh) -> Option<DecodedMesh> {
     if mesh.indices.is_empty() {
-        return Ok(None);
+        return None;
     }
     normalise_to_bounds(&mut mesh);
-    Ok(Some(mesh))
+    Some(mesh)
 }
 
 /// Decodes a `.mesh` file in its own units, using the highest-detail LOD.

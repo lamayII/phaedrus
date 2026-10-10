@@ -105,28 +105,37 @@ pub fn asset_cache_file(cache_dir: &Path, id: u64) -> std::path::PathBuf {
 /// `Ok(None)` means the data is not available locally (yet).
 pub fn load_union_mesh(inst: &Instance, cache_dir: Option<&Path>) -> anyhow::Result<Option<DecodedMesh>> {
     let Some(source) = union_source(inst) else { return Ok(None) };
-    let owned;
-    let bytes = match source {
-        UnionSource::Inline(b) => b,
+    let mesh = match source {
+        UnionSource::Inline(b) => decode_union_graphics(b)?,
         UnionSource::Asset(id) => {
             let Some(dir) = cache_dir else { return Ok(None) };
             match std::fs::read(asset_cache_file(dir, id)) {
-                Ok(b) => {
-                    let Some(b) = mesh_data_from_asset(b)? else { return Ok(None) };
-                    owned = b;
-                    &owned[..]
-                }
+                Ok(b) => decode_union_asset(b)?,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
                 Err(e) => return Err(e.into()),
             }
         }
     };
-    let Some(mut mesh) = decode_union_graphics(bytes)? else { return Ok(None) };
+    Ok(mesh.map(|m| finish_union_mesh(inst, m)))
+}
+
+/// Decodes a downloaded union mesh asset, in studs at the union's
+/// `InitialSize`. Needs no instance, so it can run on any thread; see
+/// [`finish_union_mesh`].
+pub fn decode_union_asset(bytes: Vec<u8>) -> anyhow::Result<Option<DecodedMesh>> {
+    match mesh_data_from_asset(bytes)? {
+        Some(b) => decode_union_graphics(&b),
+        None => Ok(None),
+    }
+}
+
+/// Fits a decoded union mesh to `inst`: unit-cube scale and its colour mode.
+pub fn finish_union_mesh(inst: &Instance, mut mesh: DecodedMesh) -> DecodedMesh {
     normalise(&mut mesh, initial_size(inst));
     if uses_part_color(inst) {
         mesh.colors.clear();
     }
-    Ok(Some(mesh))
+    mesh
 }
 
 /// Union assets are delivered as a model holding one `PartOperationAsset`,

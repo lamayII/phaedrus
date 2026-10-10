@@ -23,6 +23,8 @@ pub struct ContentProvider {
     roblox_platform_content: Option<PathBuf>,
     asset_cache: Option<PathBuf>,
     loaded: HashMap<String, Option<Handle<Image>>>,
+    /// Images handed over already decoded by the asset loader, by asset id.
+    downloaded: HashMap<u64, Handle<Image>>,
     grid: Option<Handle<Image>>,
 }
 
@@ -34,9 +36,14 @@ impl Default for ContentProvider {
             roblox_platform_content: install.as_ref().map(|p| p.join("PlatformContent").join("pc")),
             asset_cache: std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("phaedrus").join("assets")),
             loaded: HashMap::new(),
+            downloaded: HashMap::new(),
             grid: None,
         }
     }
+}
+
+fn asset_id(url: &str) -> Option<u64> {
+    phaedrus_dom::content::parse_asset_id(url)
 }
 
 /// Finds the newest Roblox install that has a `content` folder.
@@ -71,15 +78,7 @@ impl ContentProvider {
             }
             return None;
         }
-        let id = url
-            .strip_prefix("rbxassetid://")
-            .or_else(|| url.split("id=").nth(1))
-            .map(|s| s.trim_matches(|c: char| !c.is_ascii_digit()))?;
-        let dir = self.asset_cache.as_ref()?;
-        ["png", "jpg", "jpeg", "dds"]
-            .iter()
-            .map(|ext| dir.join(format!("{id}.{ext}")))
-            .find(|p| p.is_file())
+        phaedrus_dom::content::cached_image(self.asset_cache.as_ref()?, asset_id(url)?)
     }
 
     /// Path inside the Roblox install's content folder (e.g. `sky/sun.jpg`).
@@ -94,17 +93,26 @@ impl ContentProvider {
         if url.is_empty() {
             return None;
         }
-        if let Some(h) = self.loaded.get(url) {
-            return h.clone();
+        if let Some(Some(h)) = self.loaded.get(url) {
+            return Some(h.clone());
+        }
+        if let Some(h) = asset_id(url).and_then(|id| self.downloaded.get(&id)) {
+            let h = h.clone();
+            self.loaded.insert(url.to_owned(), Some(h.clone()));
+            return Some(h);
+        }
+        if self.loaded.contains_key(url) {
+            return None;
         }
         let handle = self.resolve(url).and_then(|p| load_image_file(&p)).map(|img| images.add(img));
         self.loaded.insert(url.to_owned(), handle.clone());
         handle
     }
 
-    /// Forgets cached misses so newly downloaded files are picked up.
-    pub fn forget_missing(&mut self) {
-        self.loaded.retain(|_, h| h.is_some());
+    /// Takes an image the asset loader downloaded and decoded; later
+    /// lookups of `rbxassetid://id` (or `?id=` URLs) resolve to it.
+    pub fn add_downloaded(&mut self, id: u64, image: Image, images: &mut Assets<Image>) {
+        self.downloaded.insert(id, images.add(image));
     }
 
     /// A procedural stand-in for the default baseplate grid texture.
@@ -115,9 +123,20 @@ impl ContentProvider {
 
 pub fn load_image_file(path: &Path) -> Option<Image> {
     let bytes = std::fs::read(path).ok()?;
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    let ext = path.extension()?.to_str()?;
+    let img = decode_image(&bytes, ext);
+    if img.is_none() {
+        warn!("failed to decode {}", path.display());
+    }
+    img
+}
+
+/// Decodes PNG/JPEG/DDS bytes. Pure CPU work, so the asset loader runs it
+/// on its download threads.
+pub fn decode_image(bytes: &[u8], ext: &str) -> Option<Image> {
+    let ext = ext.to_ascii_lowercase();
     Image::from_buffer(
-        &bytes,
+        bytes,
         ImageType::Extension(&ext),
         CompressedImageFormats::all(),
         true,
@@ -131,7 +150,6 @@ pub fn load_image_file(path: &Path) -> Option<Image> {
         }),
         RenderAssetUsages::RENDER_WORLD,
     )
-    .map_err(|e| warn!("failed to decode {}: {e}", path.display()))
     .ok()
 }
 
