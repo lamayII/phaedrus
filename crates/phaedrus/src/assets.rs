@@ -1,6 +1,7 @@
 //! Resolves Roblox content URLs to local images.
 //!
-//! Phaedrus is local-only, so `rbxassetid://` content cannot be downloaded.
+//! `rbxassetid://` content is downloaded into the asset cache by
+//! `crate::asset_loader` when an Open Cloud API key is set.
 //! Lookup order:
 //! 1. `rbxasset://path` maps into a local Roblox Studio install's `content`
 //!    folder, if one exists.
@@ -101,6 +102,11 @@ impl ContentProvider {
         handle
     }
 
+    /// Forgets cached misses so newly downloaded files are picked up.
+    pub fn forget_missing(&mut self) {
+        self.loaded.retain(|_, h| h.is_some());
+    }
+
     /// A procedural stand-in for the default baseplate grid texture.
     pub fn grid_texture(&mut self, images: &mut Assets<Image>) -> Handle<Image> {
         self.grid.get_or_insert_with(|| images.add(make_grid_image())).clone()
@@ -115,7 +121,14 @@ pub fn load_image_file(path: &Path) -> Option<Image> {
         ImageType::Extension(&ext),
         CompressedImageFormats::all(),
         true,
-        ImageSampler::linear(),
+        // Mesh UVs and Texture tiling both run outside 0..1.
+        ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
+            address_mode_u: bevy::image::ImageAddressMode::Repeat,
+            address_mode_v: bevy::image::ImageAddressMode::Repeat,
+            mag_filter: bevy::image::ImageFilterMode::Linear,
+            min_filter: bevy::image::ImageFilterMode::Linear,
+            ..default()
+        }),
         RenderAssetUsages::RENDER_WORLD,
     )
     .map_err(|e| warn!("failed to decode {}: {e}", path.display()))

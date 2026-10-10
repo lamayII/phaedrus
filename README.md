@@ -50,7 +50,8 @@ no web view can be created (or `PHAEDRUS_NO_WEBVIEW=1` is set).
   emulator in step with its settings and the open place, and saves its data.
 - `assets.rs`: content URL resolution (see "Assets").
 - `opencloud.rs`: Open Cloud API key storage (OS credential store) and HTTP client.
-- `asset_loader.rs`: downloads a place's union meshes into the asset cache after it opens.
+- `asset_loader.rs`: downloads a place's union meshes, MeshPart meshes and textures into
+  the asset cache after it opens.
 
 ## Features
 
@@ -64,7 +65,8 @@ no web view can be created (or `PHAEDRUS_NO_WEBVIEW=1` is set).
   content IDs. Edits apply to every selected instance.
 - **Viewport**: parts (block, ball, cylinder, wedge, corner wedge), unions (CSGMDL
   v2/v4/v5 via `rbx_mesh`, from inline `MeshData2` or downloaded assets; bounding boxes
-  until available), MeshParts as bounding boxes, Roblox materials mapped to PBR, transparency, Decals and Textures
+  until available), MeshParts (`.mesh` v1–v5 with their `TextureContent` or
+  SurfaceAppearance colour map; bounding boxes until available), Roblox materials mapped to PBR, transparency, Decals and Textures
   (with stud tiling), PointLight/SpotLight/SurfaceLight.
 - **Terrain**: `Terrain.SmoothGrid` is decoded and meshed as smooth (Surface Nets)
   terrain, each material coloured from `Terrain.MaterialColors`; water uses `WaterColor`
@@ -173,9 +175,16 @@ Phaedrus only downloads assets when you add a Roblox Open Cloud API key in File 
 Phaedrus Settings > API Manager. The page lists the scope to grant
 (`legacy-asset:manage`) and how to keep the key safe. The key is kept in the OS credential
 store (Windows Credential Manager), and is only sent to `apis.roblox.com`. With a key,
-opening a place downloads its union meshes into `%APPDATA%/phaedrus/assets/ID.meshdata`
-(only the ones not already cached). Without one, a warning is posted to Output and those
-unions render as bounding boxes.
+opening a place downloads what it references into `%APPDATA%/phaedrus/assets`, skipping
+anything already cached:
+
+- union meshes as `ID.meshdata`;
+- MeshPart meshes as `ID.mesh`;
+- Decal, Texture, MeshPart texture and SurfaceAppearance colour map images as
+  `ID.png|jpg|dds`. Decal asset IDs are followed to the image they wrap.
+
+Without a key, a warning is posted to Output; unions and MeshParts render as bounding
+boxes and only textures already in the cache show.
 
 Content URLs resolve as follows:
 
@@ -218,7 +227,9 @@ Benchmark and screenshot runs never save settings.
 - Play (F5) with a character and client/server split is not implemented; F5 falls back
   to Run. LocalScripts do not run.
 - No physics: unanchored parts stay where they are.
-- Terrain editing, MeshPart geometry, SurfaceGui/BillboardGui rendering and custom skybox
+- Mesh files v6/v7, SpecialMesh, SurfaceAppearance normal/roughness/metalness maps and
+  Decals on MeshParts or unions are not rendered.
+- Terrain editing, SurfaceGui/BillboardGui rendering and custom skybox
   textures (unless available locally) are not rendered.
 - The Luau API covers common instance, datatype, signal and task functionality, not the
   full Roblox API. Services such as TweenService and HttpService are not implemented;

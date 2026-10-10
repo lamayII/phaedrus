@@ -5246,6 +5246,7 @@ dependencies = [
  "phaedrus_dom",
  "phaedrus_luau",
  "phaedrus_script_editor",
+ "rbx_binary",
  "rfd",
  "serde",
  "serde_json",
@@ -5766,6 +5767,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f9bfedc10ca40c278d4d091a1f9f6084d354af12f994356be6ef81555924240"
 dependencies = [
  "binrw",
+ "regex",
 ]
 
 [[package]]

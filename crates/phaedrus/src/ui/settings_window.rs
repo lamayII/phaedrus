@@ -217,8 +217,10 @@ fn api_manager_page(ui: &mut egui::Ui, api: &mut ApiAuth) {
     api.poll();
     ui.label(
         RichText::new(
-            "Phaedrus downloads union meshes through Roblox Open Cloud. Without an API key, places still open, \
-             but those unions render as bounding boxes.",
+            "Phaedrus downloads union meshes, MeshPart meshes and textures (Decals, Textures, MeshPart \
+             textures and SurfaceAppearance colour maps) through Roblox Open Cloud. Without an API key, places \
+             still open, but unions and MeshParts render as bounding boxes and only textures already in the \
+             asset cache show.",
         )
         .small()
         .color(theme::TEXT_DIM),
@@ -287,7 +289,7 @@ fn api_manager_page(ui: &mut egui::Ui, api: &mut ApiAuth) {
         ui.label(RichText::new(e).color(theme::WARN));
     }
     ui.label(
-        RichText::new("The test only confirms the key is accepted. Union meshes that fail to download are reported in Output.")
+        RichText::new("The test only confirms the key is accepted. Assets that fail to download are reported in Output.")
             .small()
             .color(theme::TEXT_DIM),
     );
@@ -299,7 +301,7 @@ fn api_manager_page(ui: &mut egui::Ui, api: &mut ApiAuth) {
             "1. Open create.roblox.com > Creator Dashboard > Open Cloud > API Keys and click Create API Key. \
              Create it under your own account: the asset scope is not available for group keys.",
             "2. Under Access Permissions, add the \"Legacy Assets\" API system with the legacy-asset:manage \
-             scope. Phaedrus uses it only to download asset content (GET /asset-delivery-api/v1/assetId/{id}).",
+             scope. Phaedrus uses it only to download meshes and images (GET /asset-delivery-api/v1/assetId/{id}).",
             "3. Reading universe info (the Test button above, GET /cloud/v2/universes/{id}) needs no extra scope. \
              Do not add write scopes: Phaedrus never changes anything on Roblox.",
             "4. Set Accepted IP Addresses to your own public IP address rather than 0.0.0.0/0, and set an \

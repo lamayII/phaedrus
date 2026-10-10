@@ -18,8 +18,10 @@ pub enum PartShape {
     /// A CSG union, keyed by [`crate::union::union_mesh_key`]. Renders as its
     /// bounding box until the mesh is available.
     Union(u64),
-    /// Meshes and other geometry we cannot rebuild locally render as their
-    /// bounding box.
+    /// A MeshPart, keyed by [`crate::mesh::mesh_key`]. Renders as its
+    /// bounding box until the mesh is available.
+    Mesh(u64),
+    /// Geometry we cannot rebuild locally renders as its bounding box.
     Proxy,
 }
 
@@ -50,6 +52,9 @@ pub struct PartGeometry {
     /// `Enum.Material` value.
     pub material: u32,
     pub cast_shadow: bool,
+    /// Hash of the MeshPart's `TextureContent` URL, 0 for none. Lets
+    /// texture changes be detected without storing the URL here.
+    pub texture: u64,
 }
 
 /// A stored property, or the class default when the property was compacted
@@ -77,6 +82,7 @@ pub fn part_geometry(inst: &Instance) -> Option<PartGeometry> {
         "CornerWedgePart" => PartShape::CornerWedge,
         "TrussPart" | "VehicleSeat" => PartShape::Block,
         "Terrain" => return None,
+        "MeshPart" => crate::mesh::mesh_key(inst).map_or(PartShape::Proxy, PartShape::Mesh),
         c if crate::union::is_union_class(c) => {
             crate::union::union_mesh_key(inst).map_or(PartShape::Proxy, PartShape::Union)
         }
@@ -118,7 +124,19 @@ pub fn part_geometry(inst: &Instance) -> Option<PartGeometry> {
         reflectance: f32_prop("Reflectance", 0.0),
         material,
         cast_shadow,
+        texture: texture_hash(inst),
     })
+}
+
+fn texture_hash(inst: &Instance) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    if inst.class != "MeshPart" {
+        return 0;
+    }
+    let Some(url) = crate::content::content_url(inst, crate::content::MESH_TEXTURE_PROPS) else { return 0 };
+    let mut h = DefaultHasher::new();
+    url.hash(&mut h);
+    h.finish().max(1)
 }
 
 fn part_color(inst: &Instance) -> Option<[f32; 3]> {

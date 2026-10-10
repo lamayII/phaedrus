@@ -39,6 +39,7 @@ struct OverlayKey {
 pub struct MaterialCache {
     map: HashMap<MaterialKey, Handle<StandardMaterial>>,
     overlays: HashMap<OverlayKey, Handle<StandardMaterial>>,
+    textured: HashMap<(MaterialKey, AssetId<Image>), Handle<StandardMaterial>>,
 }
 
 impl MaterialCache {
@@ -46,6 +47,25 @@ impl MaterialCache {
         self.map
             .entry(key)
             .or_insert_with(|| assets.add(build(key)))
+            .clone()
+    }
+
+    /// A part material with a colour texture (MeshPart `TextureContent` or
+    /// SurfaceAppearance colour map). The texture replaces the part colour,
+    /// as in Roblox.
+    pub fn textured(
+        &mut self,
+        key: MaterialKey,
+        image: &Handle<Image>,
+        assets: &mut Assets<StandardMaterial>,
+    ) -> Handle<StandardMaterial> {
+        self.textured
+            .entry((key, image.id()))
+            .or_insert_with(|| {
+                let mut m = build(MaterialKey { rgb: [255; 3], ..key });
+                m.base_color_texture = Some(image.clone());
+                assets.add(m)
+            })
             .clone()
     }
 
@@ -82,6 +102,7 @@ impl MaterialCache {
     pub fn clear(&mut self) {
         self.map.clear();
         self.overlays.clear();
+        self.textured.clear();
     }
 }
 

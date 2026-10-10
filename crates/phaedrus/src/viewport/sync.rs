@@ -12,7 +12,7 @@ use phaedrus_dom::{Change, Document};
 use super::culling::CullGrid;
 use super::lighting::{GraphicsSettings, Technology, profile};
 use super::materials::{MaterialCache, MaterialKey};
-use super::meshes::{ShapeMeshes, UnionMeshes};
+use super::meshes::{PartMeshes, ShapeMeshes};
 use crate::asset_loader::AssetDownloads;
 use crate::assets::ContentProvider;
 use crate::studio::Studio;
@@ -38,8 +38,11 @@ pub struct PartIndex {
     structure: u64,
     /// `QualityProfile::min_caster_size` the shadow flags were set with.
     min_caster_size: f32,
-    /// [`AssetDownloads::version`] last seen, to pick up downloaded meshes.
+    /// [`AssetDownloads::version`] last seen, to pick up downloaded assets.
     downloads_seen: u64,
+    /// Parts drawn without an asset (mesh or texture) that was not
+    /// available; redrawn when downloads land.
+    pending: HashSet<Ref>,
 }
 
 impl PartIndex {
@@ -118,7 +121,7 @@ pub fn sync_parts(
     studio: Res<Studio>,
     mut index: ResMut<PartIndex>,
     shapes: Res<ShapeMeshes>,
-    mut unions: ResMut<UnionMeshes>,
+    mut part_meshes: ResMut<PartMeshes>,
     mut meshes: ResMut<Assets<Mesh>>,
     downloads: Res<AssetDownloads>,
     mut mat_cache: ResMut<MaterialCache>,
@@ -135,7 +138,7 @@ pub fn sync_parts(
     let mut ctx = SyncCtx {
         commands: &mut commands,
         shapes: &shapes,
-        unions: &mut unions,
+        part_meshes: &mut part_meshes,
         meshes: &mut meshes,
         mat_cache: &mut mat_cache,
         materials: &mut materials,
@@ -164,8 +167,9 @@ pub fn sync_parts(
         }
         index.applied.clear();
         index.overlays.clear();
+        index.pending.clear();
         ctx.mat_cache.clear();
-        ctx.unions.clear();
+        ctx.part_meshes.clear();
         ctx.grid.clear();
         index.generation = studio.generation;
         index.structure += 1;
@@ -175,22 +179,13 @@ pub fn sync_parts(
                 upsert(&doc, &mut index, &mut ctx, r, &mut transforms);
             }
         }
-        let (unions, boxed) = index.applied.values().fold((0, 0), |(n, b), g| match g.shape {
-            PartShape::Union(k) => (n + 1, b + usize::from(ctx.unions.is_missing(k))),
-            _ => (n, b),
-        });
-        if boxed > 0 {
-            studio.log(
-                phaedrus_luau::OutputLevel::Info,
-                format!("{} of {unions} unions rendered; {boxed} show as bounding boxes until their meshes are downloaded.", unions - boxed),
-            );
-        }
+        log_missing(&studio, &index, &ctx);
         return;
     }
 
     if index.downloads_seen != downloads.version() {
         index.downloads_seen = downloads.version();
-        refresh_unions(&doc, &index, &mut ctx);
+        refresh_pending(&doc, &mut index, &mut ctx);
     }
 
     if studio.frame_changes.is_empty() {
@@ -213,7 +208,7 @@ pub fn sync_parts(
             }
             Change::Property(r, _) => {
                 touched.insert(*r);
-                if doc.get(*r).is_some_and(|i| is_overlay_class(&i.class)) {
+                if doc.get(*r).is_some_and(|i| is_overlay_class(&i.class) || i.class == "SurfaceAppearance") {
                     overlay_parents.insert(doc.parent(*r));
                 }
             }
@@ -227,17 +222,16 @@ pub fn sync_parts(
             remove(&mut index, &mut ctx, r);
         }
     }
+    // Decals, Textures and SurfaceAppearances are drawn through their part.
     for p in overlay_parents {
-        if let Some(&e) = index.map.get(&p) {
-            rebuild_overlays(&doc, &mut index, &mut ctx, p, e);
-        }
+        refresh_part(&doc, &mut index, &mut ctx, p);
     }
 }
 
 struct SyncCtx<'a, 'w, 's> {
     commands: &'a mut Commands<'w, 's>,
     shapes: &'a ShapeMeshes,
-    unions: &'a mut UnionMeshes,
+    part_meshes: &'a mut PartMeshes,
     meshes: &'a mut Assets<Mesh>,
     mat_cache: &'a mut MaterialCache,
     materials: &'a mut Assets<StandardMaterial>,
@@ -247,30 +241,92 @@ struct SyncCtx<'a, 'w, 's> {
     min_caster_size: f32,
 }
 
-/// The mesh a part draws with. Unions fall back to their bounding box while
-/// their mesh is unavailable.
-fn mesh_for(ctx: &mut SyncCtx, g: &PartGeometry, inst: &phaedrus_dom::Instance) -> Handle<Mesh> {
-    if let PartShape::Union(key) = g.shape
-        && let Some(h) = ctx.unions.get(key, inst, ctx.content.asset_cache_dir(), ctx.meshes)
-    {
-        return h;
+/// The mesh a part draws with, and whether it is a stand-in for a mesh that
+/// is not available (yet): unions and MeshParts draw as their bounding box
+/// until then.
+fn mesh_for(ctx: &mut SyncCtx, g: &PartGeometry, inst: &phaedrus_dom::Instance) -> (Handle<Mesh>, bool) {
+    if !matches!(g.shape, PartShape::Union(_) | PartShape::Mesh(_)) {
+        return (ctx.shapes.get(g.shape), false);
     }
-    ctx.shapes.get(g.shape)
+    match ctx.part_meshes.get(g.shape, inst, ctx.content.asset_cache_dir(), ctx.meshes) {
+        Some(h) => (h, false),
+        None => (ctx.shapes.get(g.shape), true),
+    }
 }
 
-/// Retries unions whose mesh was missing, after new assets were downloaded.
-fn refresh_unions(doc: &Document, index: &PartIndex, ctx: &mut SyncCtx) {
-    let stale: Vec<(Ref, PartGeometry)> = index
-        .applied
-        .iter()
-        .filter(|(_, g)| matches!(g.shape, PartShape::Union(k) if ctx.unions.is_missing(k)))
-        .map(|(r, g)| (*r, *g))
-        .collect();
-    ctx.unions.forget_missing();
-    for (r, g) in stale {
-        let (Some(&e), Some(inst)) = (index.map.get(&r), doc.get(r)) else { continue };
-        let mesh = mesh_for(ctx, &g, inst);
-        ctx.commands.entity(e).insert(Mesh3d(mesh));
+/// A MeshPart's texture: its SurfaceAppearance's colour map, else its
+/// `TextureContent`.
+fn mesh_texture_url(doc: &Document, r: Ref, inst: &phaedrus_dom::Instance) -> Option<String> {
+    use phaedrus_dom::content::{COLOR_MAP_PROPS, MESH_TEXTURE_PROPS, content_url};
+    if inst.class != "MeshPart" {
+        return None;
+    }
+    let surface = doc.children(r).iter().filter_map(|c| doc.get(*c)).find(|c| c.class == "SurfaceAppearance");
+    surface
+        .and_then(|s| content_url(s, COLOR_MAP_PROPS))
+        .or_else(|| content_url(inst, MESH_TEXTURE_PROPS))
+        .map(str::to_owned)
+}
+
+/// The part's material, and whether its texture is missing (it then draws
+/// untextured).
+fn material_for(doc: &Document, ctx: &mut SyncCtx, r: Ref, g: &PartGeometry, inst: &phaedrus_dom::Instance) -> (Handle<StandardMaterial>, bool) {
+    // Textures need the mesh's UVs; the bounding-box stand-in has none that match.
+    let textured = matches!(g.shape, PartShape::Mesh(k) if !ctx.part_meshes.is_missing(k));
+    if textured && let Some(url) = mesh_texture_url(doc, r, inst) {
+        return match ctx.content.image(&url, ctx.images) {
+            Some(image) => (ctx.mat_cache.textured(key_of(g), &image, ctx.materials), false),
+            None => (ctx.mat_cache.get(key_of(g), ctx.materials), true),
+        };
+    }
+    (ctx.mat_cache.get(key_of(g), ctx.materials), false)
+}
+
+/// Redraws a part's mesh, material and overlays, e.g. after an asset it
+/// uses was downloaded or one of its SurfaceAppearances changed.
+fn refresh_part(doc: &Document, index: &mut PartIndex, ctx: &mut SyncCtx, r: Ref) {
+    let (Some(&e), Some(g), Some(inst)) = (index.map.get(&r), index.applied.get(&r).copied(), doc.get(r)) else { return };
+    index.pending.remove(&r);
+    let (mesh, mesh_missing) = mesh_for(ctx, &g, inst);
+    let (material, texture_missing) = material_for(doc, ctx, r, &g, inst);
+    ctx.commands.entity(e).insert((Mesh3d(mesh), MeshMaterial3d(material)));
+    if mesh_missing || texture_missing {
+        index.pending.insert(r);
+    }
+    rebuild_overlays(doc, index, ctx, r, e);
+}
+
+/// Retries parts that were drawn without an asset, after downloads landed.
+fn refresh_pending(doc: &Document, index: &mut PartIndex, ctx: &mut SyncCtx) {
+    if index.pending.is_empty() {
+        return;
+    }
+    ctx.part_meshes.forget_missing();
+    ctx.content.forget_missing();
+    for r in std::mem::take(&mut index.pending) {
+        refresh_part(doc, index, ctx, r);
+    }
+}
+
+/// Reports how many unions and MeshParts are still bounding boxes.
+fn log_missing(studio: &Studio, index: &PartIndex, ctx: &SyncCtx) {
+    let mut counts = [(0usize, 0usize); 2];
+    for g in index.applied.values() {
+        let (slot, key) = match g.shape {
+            PartShape::Union(k) => (0, k),
+            PartShape::Mesh(k) => (1, k),
+            _ => continue,
+        };
+        counts[slot].0 += 1;
+        counts[slot].1 += usize::from(ctx.part_meshes.is_missing(key));
+    }
+    for ((total, boxed), what) in counts.into_iter().zip(["unions", "MeshParts"]) {
+        if boxed > 0 {
+            studio.log(
+                phaedrus_luau::OutputLevel::Info,
+                format!("{} of {total} {what} rendered; {boxed} show as bounding boxes until their meshes are downloaded.", total - boxed),
+            );
+        }
     }
 }
 
@@ -300,7 +356,8 @@ fn upsert(
             && old.transparency == g.transparency
             && old.reflectance == g.reflectance
             && old.material == g.material
-            && old.cast_shadow == g.cast_shadow;
+            && old.cast_shadow == g.cast_shadow
+            && old.texture == g.texture;
         if only_moved {
             if let Ok(mut t) = transforms.get_mut(e) {
                 *t = rbx_to_transform(&g);
@@ -308,12 +365,18 @@ fn upsert(
                 ctx.commands.entity(e).insert(rbx_to_transform(&g));
             }
         } else {
-            let mesh = mesh_for(ctx, &g, inst);
+            let (mesh, mesh_missing) = mesh_for(ctx, &g, inst);
+            let (material, texture_missing) = material_for(doc, ctx, r, &g, inst);
+            if mesh_missing || texture_missing {
+                index.pending.insert(r);
+            } else {
+                index.pending.remove(&r);
+            }
             let mut ec = ctx.commands.entity(e);
             ec.insert((
                 rbx_to_transform(&g),
                 Mesh3d(mesh),
-                MeshMaterial3d(ctx.mat_cache.get(key_of(&g), ctx.materials)),
+                MeshMaterial3d(material),
                 if transparent { Visibility::Hidden } else { Visibility::Inherited },
             ));
             if casts_shadow(&g, ctx.min_caster_size) {
@@ -329,7 +392,11 @@ fn upsert(
         ctx.grid.mark_dirty(e);
         return;
     }
-    let mesh = mesh_for(ctx, &g, inst);
+    let (mesh, mesh_missing) = mesh_for(ctx, &g, inst);
+    let (material, texture_missing) = material_for(doc, ctx, r, &g, inst);
+    if mesh_missing || texture_missing {
+        index.pending.insert(r);
+    }
     let mut ec = ctx.commands.spawn((
         PartRef(r),
         // Frustum culling happens on the GPU during mesh preprocessing.
@@ -340,7 +407,7 @@ fn upsert(
         NoCpuCulling,
         rbx_to_transform(&g),
         Mesh3d(mesh),
-        MeshMaterial3d(ctx.mat_cache.get(key_of(&g), ctx.materials)),
+        MeshMaterial3d(material),
         if transparent { Visibility::Hidden } else { Visibility::Inherited },
     ));
     if !casts_shadow(&g, ctx.min_caster_size) {
@@ -366,6 +433,7 @@ fn remove(index: &mut PartIndex, ctx: &mut SyncCtx, r: Ref) {
     }
     index.applied.remove(&r);
     index.overlays.remove(&r);
+    index.pending.remove(&r);
 }
 
 /// NormalId -> (local translation axis, rotation of a +Z quad onto that face).
@@ -420,7 +488,11 @@ fn rebuild_overlays(doc: &Document, index: &mut PartIndex, ctx: &mut SyncCtx, pa
             _ => String::new(),
         };
         let is_texture = inst.class == "Texture";
-        let image = ctx.content.image(&url, ctx.images).or_else(|| {
+        let found = ctx.content.image(&url, ctx.images);
+        if found.is_none() && !url.trim().is_empty() {
+            index.pending.insert(part);
+        }
+        let image = found.or_else(|| {
             // Unknown textures render as the stock grid, which is what most
             // baseplates use.
             is_texture.then(|| ctx.content.grid_texture(ctx.images))

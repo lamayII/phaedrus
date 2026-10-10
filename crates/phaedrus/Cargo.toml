@@ -29,3 +29,6 @@ dynamic_linking = ["bevy/dynamic_linking"]
 # Must match the `wasm-bindgen` version in crates/phaedrus_script_editor.
 wasm-bindgen-cli-support = "=0.2.129"
 serde_json = "1"
+
+[dev-dependencies]
+rbx_binary.workspace = true

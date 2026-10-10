@@ -6,10 +6,12 @@
 //! to other subsystems goes through [`Document`] so it can be recorded in the
 //! change journal (used for viewport sync and undo/redo).
 
+pub mod content;
 pub mod document;
 pub mod format;
 pub mod geometry;
 pub mod history;
+pub mod mesh;
 pub mod reflection;
 pub mod terrain;
 pub mod union;

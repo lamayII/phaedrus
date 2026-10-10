@@ -1,9 +1,10 @@
 use phaedrus_dom::geometry::{PartShape, part_geometry};
 use phaedrus_dom::types::{Content, SharedString, Vector3};
 use phaedrus_dom::union::{
-    asset_cache_file, bounds_size, decode_union_graphics, load_union_mesh, mesh_data_from_asset, missing_union_assets,
-    parse_asset_id, union_mesh_key,
+    asset_cache_file, bounds_size, decode_union_graphics, load_union_mesh, mesh_data_from_asset, parse_asset_id,
+    union_mesh_key,
 };
+use phaedrus_dom::content::{AssetKind, missing_assets};
 use phaedrus_dom::{InstanceBuilder, Variant, WeakDom};
 
 /// A CSGMDL v5 union mesh with `InitialSize` (20.707275, 0.4, 6).
@@ -78,12 +79,12 @@ fn asset_union_reads_from_cache() {
     let dir = std::env::temp_dir().join(format!("phaedrus-union-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     assert!(load_union_mesh(inst, Some(&dir)).unwrap().is_none(), "not downloaded yet");
-    assert_eq!(missing_union_assets(dom.descendants(), Some(&dir)), [4500696697]);
+    assert_eq!(missing_assets(dom.descendants(), Some(&dir)), [(4500696697, AssetKind::UnionMesh)]);
 
     // Asset Delivery serves union meshes wrapped in a binary model.
     std::fs::write(asset_cache_file(&dir, 4500696697), wrapped_asset(V5)).unwrap();
     assert!(load_union_mesh(inst, Some(&dir)).unwrap().is_some());
-    assert!(missing_union_assets(dom.descendants(), Some(&dir)).is_empty());
+    assert!(missing_assets(dom.descendants(), Some(&dir)).is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
 

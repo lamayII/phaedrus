@@ -20,16 +20,7 @@ pub fn is_union_class(class: &str) -> bool {
     matches!(class, "UnionOperation" | "NegateOperation" | "IntersectOperation")
 }
 
-/// A decoded union mesh, normalised to a unit cube like the primitive shape
-/// meshes so the part's transform scale is simply its `Size`.
-#[derive(Debug, Clone, Default)]
-pub struct UnionMesh {
-    pub positions: Vec<[f32; 3]>,
-    pub normals: Vec<[f32; 3]>,
-    /// Per-vertex RGBA (0..1); empty when the format has none.
-    pub colors: Vec<[f32; 4]>,
-    pub indices: Vec<u32>,
-}
+pub use crate::mesh::{DecodedMesh, bounds_size};
 
 /// Where a union's geometry comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,24 +55,10 @@ fn inline_mesh_data(inst: &Instance) -> Option<&[u8]> {
 /// `Content` (as `https://www.roblox.com/asset/?id=N`), older ones in
 /// `AssetId`.
 pub fn asset_id(inst: &Instance) -> Option<u64> {
-    ["Content", "AssetId"].into_iter().find_map(|name| {
-        let url = match inst.properties.get(&name.into())? {
-            Variant::Content(c) => c.as_uri()?,
-            Variant::ContentId(c) => c.as_str(),
-            Variant::String(s) => s.as_str(),
-            _ => return None,
-        };
-        parse_asset_id(url)
-    })
+    crate::content::content_asset_id(inst, &["Content", "AssetId"])
 }
 
-/// Parses `rbxassetid://N` and `...?id=N` content URLs.
-pub fn parse_asset_id(url: &str) -> Option<u64> {
-    let url = url.trim();
-    let rest = url.strip_prefix("rbxassetid://").or_else(|| url.split("id=").nth(1))?;
-    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-    digits.parse().ok().filter(|&id| id > 0)
-}
+pub use crate::content::parse_asset_id;
 
 /// `UsePartColor`: when false the union shows the colours of the parts it
 /// was made from (stored per vertex).
@@ -121,12 +98,12 @@ pub fn union_mesh_key(inst: &Instance) -> Option<u64> {
 
 /// The cache file for a downloaded union mesh asset.
 pub fn asset_cache_file(cache_dir: &Path, id: u64) -> std::path::PathBuf {
-    cache_dir.join(format!("{id}.meshdata"))
+    crate::content::cache_file(cache_dir, id, crate::content::AssetKind::UnionMesh)
 }
 
 /// Decodes the union's mesh, reading `AssetId` meshes from `cache_dir`.
 /// `Ok(None)` means the data is not available locally (yet).
-pub fn load_union_mesh(inst: &Instance, cache_dir: Option<&Path>) -> anyhow::Result<Option<UnionMesh>> {
+pub fn load_union_mesh(inst: &Instance, cache_dir: Option<&Path>) -> anyhow::Result<Option<DecodedMesh>> {
     let Some(source) = union_source(inst) else { return Ok(None) };
     let owned;
     let bytes = match source {
@@ -156,28 +133,26 @@ pub fn load_union_mesh(inst: &Instance, cache_dir: Option<&Path>) -> anyhow::Res
 /// whose `MeshData` is the CSGMDL blob. Raw CSGMDL data passes through.
 /// `Ok(None)` for assets with empty `MeshData` (unions with no geometry).
 pub fn mesh_data_from_asset(bytes: Vec<u8>) -> anyhow::Result<Option<Vec<u8>>> {
-    let dom = if bytes.starts_with(b"<roblox!") {
-        rbx_binary::from_reader(&bytes[..])?
-    } else if bytes.starts_with(b"<roblox") {
-        rbx_xml::from_reader_default(&bytes[..])?
-    } else {
+    if !bytes.starts_with(b"<roblox") {
         return Ok(Some(bytes));
-    };
+    }
+    let dom = crate::content::read_model(&bytes).ok_or_else(|| anyhow::anyhow!("union asset is not a readable model"))?;
     Ok(dom.descendants().find_map(|i| inline_mesh_data(i).filter(|b| !b.is_empty()).map(<[u8]>::to_vec)))
 }
 
 /// Decodes a CSGMDL blob. `Ok(None)` for `CSGK` placeholders, which hold no
 /// geometry.
-pub fn decode_union_graphics(bytes: &[u8]) -> anyhow::Result<Option<UnionMesh>> {
+pub fn decode_union_graphics(bytes: &[u8]) -> anyhow::Result<Option<DecodedMesh>> {
     let mesh = match rbx_mesh::read_union_graphics_versioned(Cursor::new(bytes))? {
         UnionGraphics::CSGK(_) => return Ok(None),
         UnionGraphics::V2(m) => from_mesh2(m.mesh),
         UnionGraphics::V4(m) => from_mesh2(m.mesh),
         UnionGraphics::V5(m) => {
             let n = m.positions.len();
-            let mut out = UnionMesh {
+            let mut out = DecodedMesh {
                 normals: if m.normals.len() == n { m.normals.into_iter().map(|q| q.0).collect() } else { Vec::new() },
                 colors: if m.colors.len() == n { m.colors.into_iter().map(rgba).collect() } else { Vec::new() },
+                uvs: if m.tex.len() == n { m.tex } else { Vec::new() },
                 positions: m.positions,
                 indices: m.faces.indices,
             };
@@ -185,17 +160,16 @@ pub fn decode_union_graphics(bytes: &[u8]) -> anyhow::Result<Option<UnionMesh>> 
             out
         }
     };
-    if mesh.indices.iter().any(|&i| i as usize >= mesh.positions.len()) {
-        anyhow::bail!("union mesh index out of range");
-    }
+    mesh.validate()?;
     Ok(Some(mesh))
 }
 
-fn from_mesh2(m: rbx_mesh::union_graphics::Mesh2) -> UnionMesh {
-    let mut out = UnionMesh::default();
+fn from_mesh2(m: rbx_mesh::union_graphics::Mesh2) -> DecodedMesh {
+    let mut out = DecodedMesh::default();
     for v in m.vertices {
         out.positions.push(v.pos);
         out.normals.push(v.norm);
+        out.uvs.push(v.tex);
         out.colors.push(rgba(v.color));
     }
     out.indices = m.faces.into_iter().flat_map(|f| f.map(|v| v.0)).collect();
@@ -207,50 +181,9 @@ fn rgba(c: [u8; 4]) -> [f32; 4] {
 }
 
 /// Scales positions from studs at `InitialSize` to a unit cube. Without an
-/// `InitialSize`, the mesh bounds are used. Normals get the inverse-transpose
-/// of that scale so they stay perpendicular to the squashed surface.
-fn normalise(mesh: &mut UnionMesh, initial: Option<Vector3>) {
+/// `InitialSize`, the mesh bounds are used. Union meshes are already centred
+/// on the part.
+fn normalise(mesh: &mut DecodedMesh, initial: Option<Vector3>) {
     let size = initial.map(|s| [s.x, s.y, s.z]).unwrap_or_else(|| bounds_size(&mesh.positions));
-    let size = size.map(|s| if s.abs() > 1e-4 { s } else { 1e-4 });
-    for p in &mut mesh.positions {
-        for a in 0..3 {
-            p[a] /= size[a];
-        }
-    }
-    for n in &mut mesh.normals {
-        let m = [n[0] * size[0], n[1] * size[1], n[2] * size[2]];
-        let len = (m[0] * m[0] + m[1] * m[1] + m[2] * m[2]).sqrt();
-        *n = if len > 0.0 { m.map(|v| v / len) } else { [0.0, 1.0, 0.0] };
-    }
-}
-
-/// Extent of the positions along each axis.
-pub fn bounds_size(positions: &[[f32; 3]]) -> [f32; 3] {
-    let mut lo = [f32::INFINITY; 3];
-    let mut hi = [f32::NEG_INFINITY; 3];
-    for p in positions {
-        for a in 0..3 {
-            lo[a] = lo[a].min(p[a]);
-            hi[a] = hi[a].max(p[a]);
-        }
-    }
-    if positions.is_empty() {
-        return [1.0; 3];
-    }
-    [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]]
-}
-
-/// Asset ids of union meshes in the document that are not in `cache_dir`.
-pub fn missing_union_assets<'a>(instances: impl Iterator<Item = &'a Instance>, cache_dir: Option<&Path>) -> Vec<u64> {
-    let mut ids: Vec<u64> = instances
-        .filter(|i| is_union_class(&i.class))
-        .filter_map(|i| match union_source(i)? {
-            UnionSource::Asset(id) => Some(id),
-            UnionSource::Inline(_) => None,
-        })
-        .filter(|&id| cache_dir.is_none_or(|d| !asset_cache_file(d, id).is_file()))
-        .collect();
-    ids.sort_unstable();
-    ids.dedup();
-    ids
+    crate::mesh::normalise(mesh, [0.0; 3], size);
 }

@@ -10,7 +10,8 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use phaedrus_dom::Instance;
 use phaedrus_dom::geometry::PartShape;
-use phaedrus_dom::union::{UnionMesh, load_union_mesh};
+use phaedrus_dom::mesh::{DecodedMesh, load_mesh_part};
+use phaedrus_dom::union::load_union_mesh;
 
 #[derive(Resource)]
 pub struct ShapeMeshes {
@@ -26,7 +27,7 @@ pub struct ShapeMeshes {
 impl ShapeMeshes {
     pub fn get(&self, shape: PartShape) -> Handle<Mesh> {
         match shape {
-            PartShape::Block | PartShape::Proxy | PartShape::Union(_) => self.block.clone(),
+            PartShape::Block | PartShape::Proxy | PartShape::Union(_) | PartShape::Mesh(_) => self.block.clone(),
             PartShape::Ball => self.ball.clone(),
             PartShape::Cylinder => self.cylinder.clone(),
             PartShape::Wedge => self.wedge.clone(),
@@ -35,28 +36,38 @@ impl ShapeMeshes {
     }
 }
 
-/// Decoded union meshes keyed by [`PartShape::Union`]. Misses (data not
-/// downloaded yet, or undecodable) are cached too so they are not retried
-/// every time the part changes; [`Self::forget_missing`] retries them.
+/// Decoded union and MeshPart meshes keyed by [`PartShape::Union`] /
+/// [`PartShape::Mesh`]. Misses (data not downloaded yet, or undecodable)
+/// are cached too so they are not retried every time the part changes;
+/// [`Self::forget_missing`] retries them.
+type MeshLoader = fn(&Instance, Option<&Path>) -> anyhow::Result<Option<DecodedMesh>>;
+
 #[derive(Resource, Default)]
-pub struct UnionMeshes {
+pub struct PartMeshes {
     loaded: HashMap<u64, Option<Handle<Mesh>>>,
 }
 
-impl UnionMeshes {
+impl PartMeshes {
+    /// The mesh for a union or MeshPart shape; `None` for other shapes or
+    /// when the mesh is unavailable.
     pub fn get(
         &mut self,
-        key: u64,
+        shape: PartShape,
         inst: &Instance,
         cache_dir: Option<&Path>,
         meshes: &mut Assets<Mesh>,
     ) -> Option<Handle<Mesh>> {
+        let (key, load): (u64, MeshLoader) = match shape {
+            PartShape::Union(k) => (k, load_union_mesh),
+            PartShape::Mesh(k) => (k, load_mesh_part),
+            _ => return None,
+        };
         self.loaded
             .entry(key)
-            .or_insert_with(|| match load_union_mesh(inst, cache_dir) {
-                Ok(m) => m.filter(|m| !m.indices.is_empty()).map(|m| meshes.add(union_mesh(m))),
+            .or_insert_with(|| match load(inst, cache_dir) {
+                Ok(m) => m.filter(|m| !m.indices.is_empty()).map(|m| meshes.add(part_mesh(m))),
                 Err(e) => {
-                    warn!("could not decode union {:?}: {e:#}", inst.name);
+                    warn!("could not decode the mesh of {:?}: {e:#}", inst.name);
                     None
                 }
             })
@@ -78,9 +89,10 @@ impl UnionMeshes {
     }
 }
 
-fn union_mesh(m: UnionMesh) -> Mesh {
+fn part_mesh(m: DecodedMesh) -> Mesh {
     let has_normals = m.normals.len() == m.positions.len();
     let has_colors = m.colors.len() == m.positions.len();
+    let has_uvs = m.uvs.len() == m.positions.len();
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, m.positions)
         .with_inserted_indices(Indices::U32(m.indices));
@@ -91,6 +103,9 @@ fn union_mesh(m: UnionMesh) -> Mesh {
     }
     if has_colors {
         mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, m.colors);
+    }
+    if has_uvs {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, m.uvs);
     }
     mesh
 }

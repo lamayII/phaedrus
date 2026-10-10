@@ -1,7 +1,9 @@
-//! Downloads a place's union meshes into the asset cache after it opens.
+//! Downloads a place's union meshes, MeshPart meshes and textures into the
+//! asset cache after it opens.
 //!
 //! Needs an Open Cloud API key (Settings > API Manager). Without one the
-//! step is skipped with a warning and unions render as bounding boxes.
+//! step is skipped with a warning: unions and MeshParts render as bounding
+//! boxes and only locally available textures show.
 //! Downloaded files stay in the cache, so reopening a place only fetches
 //! what is still missing.
 
@@ -13,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use bevy::prelude::*;
 use parking_lot::Mutex;
-use phaedrus_dom::union::{asset_cache_file, missing_union_assets};
+use phaedrus_dom::content::{AssetKind, ImageAsset, cache_file, classify_image, missing_assets};
 use phaedrus_luau::{OutputLevel, OutputLine, SharedOutput};
 
 use crate::assets::ContentProvider;
@@ -22,7 +24,7 @@ use crate::studio::Studio;
 
 const WORKERS: usize = 6;
 const MAX_RETRIES: u32 = 5;
-/// The viewport re-checks missing unions at most this often while
+/// The viewport re-checks missing assets at most this often while
 /// downloads are running.
 const REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -45,12 +47,13 @@ struct Progress {
     total: usize,
     done: usize,
     skipped: usize,
+    unsupported: usize,
     failed: usize,
     workers_left: usize,
 }
 
 struct Job {
-    queue: Mutex<VecDeque<u64>>,
+    queue: Mutex<VecDeque<(u64, AssetKind)>>,
     progress: Mutex<Progress>,
     cancel: AtomicBool,
     /// Bumped when new files land in the cache (throttled).
@@ -77,7 +80,7 @@ impl AssetDownloads {
     pub fn progress(&self) -> Option<(usize, usize)> {
         let job = self.job.as_ref()?;
         let p = job.progress.lock();
-        (p.workers_left > 0).then_some((p.done + p.skipped + p.failed, p.total))
+        (p.workers_left > 0).then_some((p.done + p.skipped + p.unsupported + p.failed, p.total))
     }
 
     fn cancel(&mut self) {
@@ -90,7 +93,7 @@ impl AssetDownloads {
     /// download started.
     fn begin(
         &mut self,
-        ids: Vec<u64>,
+        ids: Vec<(u64, AssetKind)>,
         key: Option<&ApiKey>,
         cache_dir: Option<&Path>,
         output: &SharedOutput,
@@ -101,7 +104,7 @@ impl AssetDownloads {
             return false;
         }
         let Some(key) = key else {
-            log(output, OutputLevel::Warn, format!("{NO_AUTH_WARNING} {} union mesh(es) skipped.", ids.len()));
+            log(output, OutputLevel::Warn, format!("{NO_AUTH_WARNING} {} skipped.", describe(&ids)));
             return false;
         };
         let Some(cache_dir) = cache_dir else {
@@ -112,7 +115,7 @@ impl AssetDownloads {
             log(output, OutputLevel::Warn, format!("Could not create {}: {e}; skipping asset downloads.", cache_dir.display()));
             return false;
         }
-        log(output, OutputLevel::Info, format!("Downloading {} union mesh(es) from Open Cloud...", ids.len()));
+        log(output, OutputLevel::Info, format!("Downloading {} from Open Cloud...", describe(&ids)));
         let workers = WORKERS.min(ids.len());
         let job = Arc::new(Job {
             progress: Mutex::new(Progress { total: ids.len(), workers_left: workers, ..default() }),
@@ -138,6 +141,25 @@ impl AssetDownloads {
     }
 }
 
+/// "3 union meshes, 1 mesh, 12 images".
+fn describe(ids: &[(u64, AssetKind)]) -> String {
+    [AssetKind::UnionMesh, AssetKind::Mesh, AssetKind::Image]
+        .into_iter()
+        .filter_map(|kind| {
+            let n = ids.iter().filter(|(_, k)| *k == kind).count();
+            (n > 0).then(|| {
+                let label = kind.label();
+                if n == 1 { format!("1 {label}") } else { format!("{n} {}", plural(label)) }
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn plural(label: &str) -> String {
+    if label.ends_with('h') { format!("{label}es") } else { format!("{label}s") }
+}
+
 fn log(output: &SharedOutput, level: OutputLevel, text: impl Into<String>) {
     output.lock().push(OutputLine {
         level,
@@ -149,11 +171,12 @@ fn log(output: &SharedOutput, level: OutputLevel, text: impl Into<String>) {
 
 fn worker(job: &Job, client: &dyn Fetch) {
     while !job.cancel.load(Ordering::Relaxed) {
-        let Some(id) = job.queue.lock().pop_front() else { break };
-        let result = fetch_with_retry(job, client, id);
+        let Some((id, kind)) = job.queue.lock().pop_front() else { break };
+        let result = fetch_with_retry(job, client, id).and_then(|bytes| prepare(job, client, id, kind, bytes));
         let mut p = job.progress.lock();
         match result {
-            Ok(bytes) => match write_atomic(&asset_cache_file(&job.cache_dir, id), &bytes) {
+            Ok(None) => p.unsupported += 1,
+            Ok(Some((path, bytes))) => match write_atomic(&path, &bytes) {
                 Ok(()) => p.done += 1,
                 Err(e) => {
                     p.failed += 1;
@@ -191,12 +214,33 @@ fn worker(job: &Job, client: &dyn Fetch) {
                 &job.output,
                 if p.failed > 0 { OutputLevel::Warn } else { OutputLevel::Info },
                 format!(
-                    "Asset download finished: {} downloaded, {} not accessible with this key, {} failed.",
-                    p.done, p.skipped, p.failed
+                    "Asset download finished: {} downloaded, {} not accessible with this key, {} in unsupported formats, {} failed.",
+                    p.done, p.skipped, p.unsupported, p.failed
                 ),
             );
         }
     }
+}
+
+/// Where and what to cache for a downloaded asset; `None` if its format is
+/// not supported. Decal assets are models that point at their image, which
+/// is fetched and cached under the Decal's id.
+fn prepare(job: &Job, client: &dyn Fetch, id: u64, kind: AssetKind, bytes: Vec<u8>) -> Result<Option<(PathBuf, Vec<u8>)>, ApiError> {
+    if kind != AssetKind::Image {
+        return Ok(Some((cache_file(&job.cache_dir, id, kind), bytes)));
+    }
+    let (ext, bytes) = match classify_image(&bytes) {
+        ImageAsset::Image(ext) => (ext, bytes),
+        ImageAsset::Redirect(inner) if inner != id => {
+            let bytes = fetch_with_retry(job, client, inner)?;
+            match classify_image(&bytes) {
+                ImageAsset::Image(ext) => (ext, bytes),
+                _ => return Ok(None),
+            }
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some((job.cache_dir.join(format!("{id}.{ext}")), bytes)))
 }
 
 fn fetch_with_retry(job: &Job, client: &dyn Fetch, id: u64) -> Result<Vec<u8>, ApiError> {
@@ -236,10 +280,12 @@ pub fn start_downloads(
     }
     downloads.opened_seen = studio.opened;
     let cache_dir = content.asset_cache_dir();
-    let ids = {
+    let mut ids = {
         let doc = studio.doc();
-        missing_union_assets(doc.dom().descendants(), cache_dir)
+        missing_assets(doc.dom().descendants(), cache_dir)
     };
+    // Geometry first: it changes the scene more than textures do.
+    ids.sort_by_key(|&(id, kind)| (kind, id));
     downloads.begin(ids, auth.key(), cache_dir, &studio.output, |key| Arc::new(OpenCloud::new(key)));
 }
 
@@ -248,7 +294,7 @@ pub fn report_progress(downloads: Res<AssetDownloads>, mut studio: ResMut<Studio
     match downloads.progress() {
         Some((finished, total)) => {
             *was_active = true;
-            let text = format!("Downloading union meshes {finished}/{total}");
+            let text = format!("Downloading assets {finished}/{total}");
             if studio.status != text {
                 studio.status = text;
             }
@@ -288,7 +334,7 @@ mod tests {
     fn without_key_warns_once_and_never_fetches() {
         let out = SharedOutput::default();
         let mut d = AssetDownloads::default();
-        let started = d.begin(vec![1, 2, 3], None, Some(Path::new(".")), &out, |_| -> Arc<dyn Fetch> {
+        let started = d.begin(vec![(1, AssetKind::UnionMesh), (2, AssetKind::Mesh), (3, AssetKind::Image)], None, Some(Path::new(".")), &out, |_| -> Arc<dyn Fetch> {
             panic!("no client without a key")
         });
         assert!(!started);
@@ -296,6 +342,7 @@ mod tests {
         assert_eq!(l.len(), 1);
         assert_eq!(l[0].0, OutputLevel::Warn);
         assert!(l[0].1.starts_with(NO_AUTH_WARNING));
+        assert!(l[0].1.ends_with("1 union mesh, 1 mesh, 1 image skipped."), "{}", l[0].1);
     }
 
     #[test]
@@ -314,13 +361,13 @@ mod tests {
         let mut d = AssetDownloads::default();
         let key = ApiKey::new("test-key").unwrap();
         let v0 = d.version();
-        let started = d.begin(vec![10, 11, 12], Some(&key), Some(&dir), &out, |_| {
+        let started = d.begin(vec![(10, AssetKind::UnionMesh), (11, AssetKind::UnionMesh), (12, AssetKind::UnionMesh)], Some(&key), Some(&dir), &out, |_| {
             Arc::new(Fake(|id| if id == 11 { Err(ApiError::Forbidden) } else { Ok(vec![id as u8]) }))
         });
         assert!(started);
         wait(&d);
-        assert_eq!(std::fs::read(asset_cache_file(&dir, 10)).unwrap(), [10]);
-        assert!(!asset_cache_file(&dir, 11).exists());
+        assert_eq!(std::fs::read(cache_file(&dir, 10, AssetKind::UnionMesh)).unwrap(), [10]);
+        assert!(!cache_file(&dir, 11, AssetKind::UnionMesh).exists());
         assert!(d.version() > v0);
         assert!(lines(&out).iter().any(|(_, t)| t.contains("2 downloaded, 1 not accessible")));
         let _ = std::fs::remove_dir_all(&dir);
@@ -332,11 +379,46 @@ mod tests {
         let out = SharedOutput::default();
         let mut d = AssetDownloads::default();
         let key = ApiKey::new("SECRET-KEY").unwrap();
-        d.begin((1..=50).collect(), Some(&key), Some(&dir), &out, |_| Arc::new(Fake(|_| Err(ApiError::Unauthorized))));
+        d.begin((1..=50).map(|id| (id, AssetKind::Mesh)).collect(), Some(&key), Some(&dir), &out, |_| Arc::new(Fake(|_| Err(ApiError::Unauthorized))));
         wait(&d);
         let l = lines(&out);
         assert_eq!(l.iter().filter(|(lvl, _)| *lvl == OutputLevel::Error).count(), 1);
         assert!(l.iter().all(|(_, t)| !t.contains("SECRET")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn images_are_sniffed_and_decals_followed() {
+        use phaedrus_dom::{InstanceBuilder, WeakDom};
+        const PNG: &[u8] = b"\x89PNG\r\n\x1a\n....";
+        fn decal_model() -> Vec<u8> {
+            let dom = WeakDom::new(InstanceBuilder::new("DataModel").with_child(
+                InstanceBuilder::new("Decal").with_property("Texture", phaedrus_dom::types::ContentId::from("rbxassetid://21")),
+            ));
+            let mut out = Vec::new();
+            rbx_binary::to_writer(&mut out, &dom, dom.root().children()).unwrap();
+            out
+        }
+        let dir = std::env::temp_dir().join(format!("phaedrus-asset-test-img-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = SharedOutput::default();
+        let mut d = AssetDownloads::default();
+        let key = ApiKey::new("k").unwrap();
+        let ids = vec![(20, AssetKind::Image), (22, AssetKind::Image), (23, AssetKind::Mesh)];
+        d.begin(ids, Some(&key), Some(&dir), &out, |_| {
+            Arc::new(Fake(|id| match id {
+                20 => Ok(decal_model()),
+                21 => Ok(PNG.to_vec()),
+                22 => Ok(b"RIFF....WEBP".to_vec()),
+                _ => Ok(b"version 4.00".to_vec()),
+            }))
+        });
+        wait(&d);
+        // The Decal's image is cached under the Decal's own id.
+        assert_eq!(std::fs::read(dir.join("20.png")).unwrap(), PNG);
+        assert!(phaedrus_dom::content::cached_image(&dir, 22).is_none());
+        assert_eq!(std::fs::read(cache_file(&dir, 23, AssetKind::Mesh)).unwrap(), b"version 4.00");
+        assert!(lines(&out).iter().any(|(_, t)| t.contains("2 downloaded, 0 not accessible with this key, 1 in unsupported formats")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
